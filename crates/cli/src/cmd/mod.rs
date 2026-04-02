@@ -4,6 +4,7 @@ pub mod health;
 pub mod output;
 pub mod repl;
 pub mod sessions;
+pub mod tui;
 
 use clap::Subcommand;
 
@@ -20,6 +21,8 @@ pub enum Commands {
     Agent(agent::AgentArgs),
     /// Start an interactive chat session (REPL)
     Repl(repl::ReplArgs),
+    /// Start the full-screen terminal UI (TUI)
+    Tui(tui::TuiArgs),
     /// Manage scheduled agent jobs
     Cron {
         #[command(subcommand)]
@@ -33,6 +36,7 @@ pub async fn run(cmd: Commands) -> anyhow::Result<()> {
         Commands::Sessions { action } => sessions::run(action).await,
         Commands::Agent(args) => agent::run(args).await,
         Commands::Repl(args) => repl::run(args).await,
+        Commands::Tui(args) => tui::run(args).await,
         Commands::Cron { action } => cron::run(action).await,
     }
 }

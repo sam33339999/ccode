@@ -26,9 +26,16 @@ pub enum Action {
     Delete {
         /// Session ID
         id: String,
+        /// Show what would be deleted without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Delete all sessions (with confirmation prompt)
-    Clear,
+    Clear {
+        /// Show what would be deleted without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub async fn run(action: Action) -> anyhow::Result<()> {
@@ -37,8 +44,8 @@ pub async fn run(action: Action) -> anyhow::Result<()> {
     match action {
         Action::List { limit } => list(&state, limit).await,
         Action::Show { id } => show(&state, id).await,
-        Action::Delete { id } => delete(&state, id).await,
-        Action::Clear => clear(&state).await,
+        Action::Delete { id, dry_run } => delete(&state, id, dry_run).await,
+        Action::Clear { dry_run } => clear_impl(&state, dry_run).await,
     }
 }
 
@@ -72,7 +79,16 @@ async fn show(state: &ccode_bootstrap::AppState, id: String) -> anyhow::Result<(
     Ok(())
 }
 
-async fn delete(state: &ccode_bootstrap::AppState, id: String) -> anyhow::Result<()> {
+async fn delete(
+    state: &ccode_bootstrap::AppState,
+    id: String,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    if dry_run {
+        println!("{}", render_delete_dry_run_message(&id));
+        return Ok(());
+    }
+
     let deleted = SessionsDeleteCommand::new(state.session_repo.clone())
         .execute(id.clone())
         .await?;
@@ -83,7 +99,12 @@ async fn delete(state: &ccode_bootstrap::AppState, id: String) -> anyhow::Result
     Ok(())
 }
 
-async fn clear(state: &ccode_bootstrap::AppState) -> anyhow::Result<()> {
+async fn clear_impl(state: &ccode_bootstrap::AppState, dry_run: bool) -> anyhow::Result<()> {
+    if dry_run {
+        println!("{}", render_clear_dry_run_message());
+        return Ok(());
+    }
+
     print!("Delete ALL sessions? Type 'yes' to continue: ");
     io::stdout().flush()?;
 
@@ -99,6 +120,14 @@ async fn clear(state: &ccode_bootstrap::AppState) -> anyhow::Result<()> {
         .await?;
     println!("Deleted {deleted} session(s).");
     Ok(())
+}
+
+fn render_delete_dry_run_message(id: &str) -> String {
+    format!("[dry-run] Would delete session: {id}")
+}
+
+fn render_clear_dry_run_message() -> &'static str {
+    "[dry-run] Would delete all sessions."
 }
 
 fn render_session_summary_line(id: &str, message_count: usize, updated_at: u64) -> String {
@@ -163,6 +192,22 @@ mod tests {
         assert!(is_clear_confirmed("yes\n"));
         assert!(!is_clear_confirmed("y\n"));
         assert!(!is_clear_confirmed("YES\n"));
+    }
+
+    #[test]
+    fn delete_dry_run_message_includes_session_id() {
+        assert_eq!(
+            render_delete_dry_run_message("s-1"),
+            "[dry-run] Would delete session: s-1"
+        );
+    }
+
+    #[test]
+    fn clear_dry_run_message_is_stable() {
+        assert_eq!(
+            render_clear_dry_run_message(),
+            "[dry-run] Would delete all sessions."
+        );
     }
 
     #[test]

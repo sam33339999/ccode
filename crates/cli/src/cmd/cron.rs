@@ -28,6 +28,9 @@ pub enum Action {
     Delete {
         /// Job ID
         id: String,
+        /// Show what would be deleted without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Manually trigger one execution of a scheduled job
     Run {
@@ -46,7 +49,7 @@ pub async fn run(action: Action) -> anyhow::Result<()> {
             name,
             message,
         } => create(&state.cron_repo, state.provider, schedule, message, name).await,
-        Action::Delete { id } => delete(&state.cron_repo, id).await,
+        Action::Delete { id, dry_run } => delete(&state.cron_repo, id, dry_run).await,
         Action::Run { id } => run_job(&state.cron_repo, state.provider, id).await,
     }
 }
@@ -95,7 +98,12 @@ async fn create(
     Ok(())
 }
 
-async fn delete(repo: &dyn CronRepository, id: String) -> anyhow::Result<()> {
+async fn delete(repo: &dyn CronRepository, id: String, dry_run: bool) -> anyhow::Result<()> {
+    if dry_run {
+        println!("{}", render_delete_dry_run_message(&id));
+        return Ok(());
+    }
+
     repo.delete(&CronJobId(id.clone())).await?;
     println!("Deleted job: {id}");
     Ok(())
@@ -177,9 +185,13 @@ fn ms_to_rfc3339(ms: u64) -> String {
     dt.to_rfc3339()
 }
 
+fn render_delete_dry_run_message(id: &str) -> String {
+    format!("[dry-run] Would delete cron job: {id}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Action;
+    use super::{Action, render_delete_dry_run_message};
     use clap::Parser;
 
     #[derive(Parser)]
@@ -211,12 +223,39 @@ mod tests {
     #[test]
     fn parses_delete_command() {
         let cli = Cli::try_parse_from(["ccode", "delete", "cron-1"]).expect("delete should parse");
-        assert!(matches!(cli.action, Action::Delete { .. }));
+        assert!(matches!(
+            cli.action,
+            Action::Delete {
+                id,
+                dry_run: false
+            } if id == "cron-1"
+        ));
+    }
+
+    #[test]
+    fn parses_delete_dry_run_command() {
+        let cli = Cli::try_parse_from(["ccode", "delete", "cron-1", "--dry-run"])
+            .expect("delete --dry-run should parse");
+        assert!(matches!(
+            cli.action,
+            Action::Delete {
+                id,
+                dry_run: true
+            } if id == "cron-1"
+        ));
     }
 
     #[test]
     fn parses_run_command() {
         let cli = Cli::try_parse_from(["ccode", "run", "cron-1"]).expect("run should parse");
         assert!(matches!(cli.action, Action::Run { .. }));
+    }
+
+    #[test]
+    fn delete_dry_run_message_is_stable() {
+        assert_eq!(
+            render_delete_dry_run_message("cron-42"),
+            "[dry-run] Would delete cron job: cron-42"
+        );
     }
 }

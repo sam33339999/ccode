@@ -1,5 +1,6 @@
 use ccode_bootstrap::exports::{
-    CronJob, CronJobId, CronRepository, ProviderPort, next_run_ms, parse_natural_schedule,
+    CompletionRequest, CronJob, CronJobId, CronRepository, Message, ProviderPort, Role,
+    next_run_ms, parse_natural_schedule,
 };
 use ccode_bootstrap::wire_from_config;
 use clap::Subcommand;
@@ -9,30 +10,27 @@ use std::sync::Arc;
 pub enum Action {
     /// List all scheduled jobs
     List,
-    /// Add a new scheduled job
-    Add {
-        /// Human-readable name
-        #[arg(short, long)]
-        name: String,
-        /// Natural language schedule, e.g. "每天早上 9 點" or "every monday at 3pm"
-        #[arg(short, long)]
-        when: String,
+    /// Create a new scheduled job
+    #[command(visible_alias = "add")]
+    Create {
+        /// Cron expression or natural language schedule
+        #[arg(long)]
+        schedule: String,
         /// Message sent to the agent when the job fires
-        #[arg(short, long)]
+        #[arg(long)]
         message: String,
+        /// Optional human-readable name
+        #[arg(long, default_value = "agent-scheduled")]
+        name: String,
     },
-    /// Remove a scheduled job
-    Remove {
+    /// Delete a scheduled job
+    #[command(visible_alias = "remove")]
+    Delete {
         /// Job ID
         id: String,
     },
-    /// Enable a job
-    Enable {
-        /// Job ID
-        id: String,
-    },
-    /// Disable a job (without deleting it)
-    Disable {
+    /// Manually trigger one execution of a scheduled job
+    Run {
         /// Job ID
         id: String,
     },
@@ -43,19 +41,13 @@ pub async fn run(action: Action) -> anyhow::Result<()> {
 
     match action {
         Action::List => list(&state.cron_repo).await,
-        Action::Add {
+        Action::Create {
+            schedule,
             name,
-            when,
             message,
-        } => {
-            let provider = state
-                .provider
-                .ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set an API key"))?;
-            add(&state.cron_repo, provider, name, when, message).await
-        }
-        Action::Remove { id } => remove(&state.cron_repo, id).await,
-        Action::Enable { id } => set_enabled(&state.cron_repo, id, true).await,
-        Action::Disable { id } => set_enabled(&state.cron_repo, id, false).await,
+        } => create(&state.cron_repo, state.provider, schedule, message, name).await,
+        Action::Delete { id } => delete(&state.cron_repo, id).await,
+        Action::Run { id } => run_job(&state.cron_repo, state.provider, id).await,
     }
 }
 
@@ -81,22 +73,18 @@ async fn list(repo: &dyn CronRepository) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn add(
+async fn create(
     repo: &dyn CronRepository,
-    provider: Arc<dyn ProviderPort>,
-    name: String,
-    when: String,
+    provider: Option<Arc<dyn ProviderPort>>,
+    schedule_input: String,
     message: String,
+    name: String,
 ) -> anyhow::Result<()> {
-    eprint!("Parsing schedule...");
-    let schedule = parse_natural_schedule(&*provider, &when)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    eprintln!(" → {schedule}");
+    let schedule = parse_schedule(provider.as_deref(), &schedule_input).await?;
 
     let now = now_ms();
     let job_id = format!("cron-{now}");
-    let mut job = CronJob::new(job_id, name, when, schedule, message, now);
+    let mut job = CronJob::new(job_id, name, schedule_input, schedule, message, now);
     job.next_run_at = next_run_ms(&job.schedule);
 
     repo.save(&job).await?;
@@ -107,26 +95,64 @@ async fn add(
     Ok(())
 }
 
-async fn remove(repo: &dyn CronRepository, id: String) -> anyhow::Result<()> {
+async fn delete(repo: &dyn CronRepository, id: String) -> anyhow::Result<()> {
     repo.delete(&CronJobId(id.clone())).await?;
     println!("Deleted job: {id}");
     Ok(())
 }
 
-async fn set_enabled(repo: &dyn CronRepository, id: String, enabled: bool) -> anyhow::Result<()> {
+async fn run_job(
+    repo: &dyn CronRepository,
+    provider: Option<Arc<dyn ProviderPort>>,
+    id: String,
+) -> anyhow::Result<()> {
+    let provider =
+        provider.ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set an API key"))?;
     let job_id = CronJobId(id.clone());
     let mut job = repo
         .find_by_id(&job_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("job not found: {id}"))?;
-    job.enabled = enabled;
-    if enabled {
-        job.next_run_at = next_run_ms(&job.schedule);
-    }
+
+    let req = CompletionRequest {
+        messages: vec![Message::new(
+            "cron-run",
+            Role::User,
+            job.message.clone(),
+            now_ms(),
+        )],
+        model: None,
+        max_tokens: None,
+        temperature: None,
+        tools: vec![],
+    };
+    let resp = provider.complete(req).await?;
+
+    let now = now_ms();
+    job.last_run_at = Some(now);
+    job.next_run_at = next_run_ms(&job.schedule);
     repo.save(&job).await?;
-    let state = if enabled { "enabled" } else { "disabled" };
-    println!("Job {id} {state}");
+
+    println!("Ran job: {id}");
+    if !resp.content.trim().is_empty() {
+        println!("{}", resp.content.trim());
+    }
     Ok(())
+}
+
+async fn parse_schedule(
+    provider: Option<&dyn ProviderPort>,
+    schedule_input: &str,
+) -> anyhow::Result<String> {
+    if next_run_ms(schedule_input).is_some() {
+        return Ok(schedule_input.to_string());
+    }
+
+    let provider =
+        provider.ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set an API key"))?;
+    parse_natural_schedule(provider, schedule_input)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -149,4 +175,48 @@ fn ms_to_rfc3339(ms: u64) -> String {
     let t = UNIX_EPOCH + Duration::from_millis(ms);
     let dt: chrono::DateTime<chrono::Utc> = t.into();
     dt.to_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Action;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        action: Action,
+    }
+
+    #[test]
+    fn parses_list_command() {
+        let cli = Cli::try_parse_from(["ccode", "list"]).expect("list should parse");
+        assert!(matches!(cli.action, Action::List));
+    }
+
+    #[test]
+    fn parses_create_command() {
+        let cli = Cli::try_parse_from([
+            "ccode",
+            "create",
+            "--schedule",
+            "0 9 * * *",
+            "--message",
+            "daily summary",
+        ])
+        .expect("create should parse");
+        assert!(matches!(cli.action, Action::Create { .. }));
+    }
+
+    #[test]
+    fn parses_delete_command() {
+        let cli = Cli::try_parse_from(["ccode", "delete", "cron-1"]).expect("delete should parse");
+        assert!(matches!(cli.action, Action::Delete { .. }));
+    }
+
+    #[test]
+    fn parses_run_command() {
+        let cli = Cli::try_parse_from(["ccode", "run", "cron-1"]).expect("run should parse");
+        assert!(matches!(cli.action, Action::Run { .. }));
+    }
 }

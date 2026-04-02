@@ -18,7 +18,11 @@ use std::sync::Arc;
 pub mod exports {
     pub use ccode_cron::{next_run_ms, parse_natural_schedule};
     pub use ccode_domain::cron::{CronJob, CronJobId};
-    pub use ccode_ports::{cron::CronRepository, provider::ProviderPort};
+    pub use ccode_domain::message::{Message, Role};
+    pub use ccode_ports::{
+        cron::CronRepository,
+        provider::{CompletionRequest, ProviderPort},
+    };
 }
 
 /// Shared application state passed into every request handler.

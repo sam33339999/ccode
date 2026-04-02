@@ -18,7 +18,9 @@ use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::output::{ErrorCategory, classify_error, error_category_label, summarize_tool_args};
+use super::output::{
+    ErrorCategory, classify_error, error_category_label, summarize_tool_args, worker_status_label,
+};
 
 #[derive(Args, Default)]
 pub struct TuiArgs {}
@@ -175,6 +177,7 @@ enum ConversationLine {
     Assistant(String),
     ToolStart { name: String, args_summary: String },
     ToolDone { name: String, success: bool },
+    WorkerStatus { task_id: String, status: String },
 }
 
 #[derive(Default)]
@@ -280,6 +283,11 @@ impl AppState {
             .push(ConversationLine::ToolDone { name, success });
     }
 
+    fn push_worker_status(&mut self, task_id: String, status: String) {
+        self.conversation
+            .push(ConversationLine::WorkerStatus { task_id, status });
+    }
+
     fn push_error_status(&mut self, message: String) {
         let category = classify_error(&message);
         self.push_status(StatusLine {
@@ -345,6 +353,9 @@ impl AppState {
                     let marker = if *success { "[ok]" } else { "[fail]" };
                     vec![Line::from(format!("[tool:done] {name} {marker}"))]
                 }
+                ConversationLine::WorkerStatus { task_id, status } => {
+                    vec![Line::from(format!("[worker] {task_id} {status}"))]
+                }
             })
             .collect()
     }
@@ -371,6 +382,7 @@ enum UiEvent {
     AssistantDone,
     ToolStart { name: String, args: Value },
     ToolDone { name: String, success: bool },
+    WorkerStatus { task_id: String, status: String },
     Error(String),
     SessionReady(String),
 }
@@ -415,6 +427,7 @@ fn drain_ui_events(
             }
             UiEvent::ToolStart { name, args } => app.push_tool_start(name, args),
             UiEvent::ToolDone { name, success } => app.push_tool_done(name, success),
+            UiEvent::WorkerStatus { task_id, status } => app.push_worker_status(task_id, status),
             UiEvent::Error(message) => {
                 runtime.in_flight = false;
                 app.push_error_status(message);
@@ -470,6 +483,19 @@ fn spawn_agent_turn(
                     .execute(&name, args, &tool_ctx)
                     .await
                     .map_err(|e| e.to_string());
+                if let Ok(payload) = &result
+                    && let Ok(value) = serde_json::from_str::<Value>(payload)
+                    && let (Some(task_id), Some(status_raw)) = (
+                        value.get("task_id").and_then(Value::as_str),
+                        value.get("status").and_then(Value::as_str),
+                    )
+                    && let Some(status) = worker_status_label(status_raw)
+                {
+                    let _ = tx.send(UiEvent::WorkerStatus {
+                        task_id: task_id.to_string(),
+                        status: status.to_string(),
+                    });
+                }
                 let _ = tx.send(UiEvent::ToolDone {
                     name: name.clone(),
                     success: result.is_ok(),

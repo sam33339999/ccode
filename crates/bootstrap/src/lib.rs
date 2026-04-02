@@ -1,4 +1,5 @@
 use ccode_application::commands::agent_run::ContextPolicy;
+use ccode_application::spec_contracts::MultiAgentOrchestrator;
 use ccode_mcp_runtime::contracts::{CapabilityLevel, DefaultMcpCapabilityPolicy};
 use ccode_ports::{
     cron::CronRepository,
@@ -8,10 +9,12 @@ use ccode_ports::{
 };
 use ccode_tools::{
     ToolRegistry,
+    agent::{AgentTool, ManagedWorkerRuntime, build_orchestrator},
     fs::{FsEditTool, FsGlobTool, FsGrepTool, FsListTool, FsReadTool, FsWriteTool},
     mcp::{McpServerLaunch, discover_mcp_tools},
     shell::ShellTool,
     spawn_agent::SpawnAgentTool,
+    task_stop::TaskStopTool,
     web::{BrowserTool, WebFetchTool},
 };
 use std::path::PathBuf;
@@ -108,9 +111,22 @@ fn wire_spawn_agent(
     provider: Arc<dyn LlmClient>,
     session_repo: Arc<dyn SessionRepository>,
     context_policy: ContextPolicy,
+    orchestrator: Arc<dyn MultiAgentOrchestrator>,
+    worker_runtime: Arc<ManagedWorkerRuntime>,
 ) -> Arc<ToolRegistry> {
+    let provider_for_agent = Arc::clone(&provider);
+    let session_repo_for_agent = Arc::clone(&session_repo);
+    let context_policy_for_agent = context_policy.clone();
+
     // SpawnAgentTool::new returns the tool + a shared OnceLock cell
     let (spawn_tool, cell) = SpawnAgentTool::new(provider, session_repo, context_policy);
+    let (agent_tool, agent_cell) = AgentTool::new(
+        provider_for_agent,
+        session_repo_for_agent,
+        context_policy_for_agent,
+        orchestrator.clone(),
+        worker_runtime,
+    );
 
     // We need a mutable ToolRegistry — unwrap the Arc (only one owner at this point)
     // and re-wrap after registration.
@@ -118,10 +134,15 @@ fn wire_spawn_agent(
         panic!("wire_spawn_agent must be called before the registry Arc is cloned")
     });
     inner.register(Arc::new(spawn_tool));
+    inner.register(Arc::new(agent_tool));
+    inner.register(Arc::new(TaskStopTool::new(orchestrator)));
     let registry = Arc::new(inner);
 
     // Wire the back-reference — must succeed because the cell is brand-new
     cell.set(Arc::clone(&registry))
+        .unwrap_or_else(|_| panic!("registry cell already set"));
+    agent_cell
+        .set(Arc::clone(&registry))
         .unwrap_or_else(|_| panic!("registry cell already set"));
 
     registry
@@ -226,6 +247,8 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
         provider_arc.clone(),
         discovered_mcp_tools,
     ));
+    let worker_runtime = Arc::new(ManagedWorkerRuntime::default());
+    let orchestrator = build_orchestrator(worker_runtime.clone());
 
     // Two-phase: register spawn_agent with back-reference to the completed registry
     let tool_registry = if let Some(prov) = provider_arc.clone() {
@@ -234,6 +257,8 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
             prov,
             Arc::clone(&session_repo),
             context_policy.clone(),
+            orchestrator,
+            worker_runtime,
         )
     } else {
         tool_registry

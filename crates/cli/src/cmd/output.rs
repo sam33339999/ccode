@@ -24,6 +24,16 @@ pub fn error_category_label(category: ErrorCategory) -> &'static str {
     }
 }
 
+pub fn worker_status_label(status: &str) -> Option<&'static str> {
+    match status {
+        "Running" => Some("Running"),
+        "Completed" => Some("Completed"),
+        "Failed" => Some("Failed"),
+        "Cancelled" => Some("Cancelled"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ErrorContext {
     pub session_id: String,
@@ -150,7 +160,13 @@ impl StreamFormatter {
     pub fn tool_result_line(&mut self, tool_name: &str, result: &Result<String, String>) -> String {
         let status = if result.is_ok() { "success" } else { "failure" };
         self.at_line_start = true;
-        format!("[tool:done] {} status={}\n", tool_name, status)
+        let mut rendered = format!("[tool:done] {} status={}\n", tool_name, status);
+        if let Ok(payload) = result
+            && let Some(worker_line) = render_worker_status_line(payload)
+        {
+            rendered.push_str(worker_line.as_str());
+        }
+        rendered
     }
 }
 
@@ -173,7 +189,8 @@ pub fn summarize_tool_args(args: &Value) -> String {
 pub fn classify_tool_risk(tool_name: &str) -> ToolRiskLevel {
     match tool_name {
         // Can execute arbitrary commands or mutate local state heavily.
-        "shell" | "fs_write" | "fs_edit" | "spawn_agent" | "cron_create" => ToolRiskLevel::High,
+        "shell" | "fs_write" | "fs_edit" | "spawn_agent" | "agent" | "task_stop"
+        | "cron_create" => ToolRiskLevel::High,
         // External network requests with lower local impact.
         "browser" | "web_fetch" => ToolRiskLevel::Medium,
         _ => ToolRiskLevel::Low,
@@ -256,6 +273,14 @@ fn summarize_arg_value(v: &Value) -> String {
     } else {
         raw
     }
+}
+
+fn render_worker_status_line(payload: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(payload).ok()?;
+    let task_id = value.get("task_id")?.as_str()?;
+    let status = value.get("status")?.as_str()?;
+    let status = worker_status_label(status)?;
+    Some(format!("[worker] task_id={task_id} status={status}\n"))
 }
 
 fn classify_anyhow_error(error: &AnyError, ctx: &ErrorContext) -> ErrorEnvelope {
@@ -497,6 +522,29 @@ mod tests {
 
         assert_eq!(ok_line, "[tool:done] fs_read status=success\n");
         assert_eq!(err_line, "[tool:done] fs_read status=failure\n");
+    }
+
+    #[test]
+    fn tool_result_includes_worker_status_when_present() {
+        let mut formatter = StreamFormatter::new();
+        let line = formatter.tool_result_line(
+            "agent",
+            &Ok(json!({"task_id":"w-1","status":"Running"}).to_string()),
+        );
+
+        assert_eq!(
+            line,
+            "[tool:done] agent status=success\n[worker] task_id=w-1 status=Running\n"
+        );
+    }
+
+    #[test]
+    fn worker_status_labels_are_stable() {
+        assert_eq!(worker_status_label("Running"), Some("Running"));
+        assert_eq!(worker_status_label("Completed"), Some("Completed"));
+        assert_eq!(worker_status_label("Failed"), Some("Failed"));
+        assert_eq!(worker_status_label("Cancelled"), Some("Cancelled"));
+        assert_eq!(worker_status_label("unknown"), None);
     }
 
     #[test]

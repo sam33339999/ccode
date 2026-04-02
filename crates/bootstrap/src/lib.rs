@@ -8,6 +8,7 @@ use ccode_ports::{
 use ccode_tools::{
     ToolRegistry,
     fs::{FsEditTool, FsGlobTool, FsGrepTool, FsListTool, FsReadTool, FsWriteTool},
+    mcp::{McpServerLaunch, discover_mcp_tools},
     shell::ShellTool,
     spawn_agent::SpawnAgentTool,
     web::{BrowserTool, WebFetchTool},
@@ -56,6 +57,7 @@ pub fn build_tool_registry(
     _cwd: PathBuf,
     cron_repo: Option<Arc<dyn ccode_ports::cron::CronRepository>>,
     provider: Option<Arc<dyn ccode_ports::provider::LlmClient>>,
+    discovered_mcp_tools: Vec<ccode_tools::mcp::DiscoveredMcpTool>,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(FsReadTool));
@@ -72,6 +74,9 @@ pub fn build_tool_registry(
             repo, prov,
         )));
     }
+    for tool in discovered_mcp_tools {
+        registry.register_with_source(tool.source, tool.adapter);
+    }
     registry
 }
 
@@ -85,7 +90,7 @@ pub fn wire_dev() -> AppState {
         session_repo: Arc::new(InMemorySessionRepo::new()),
         cron_repo: Arc::new(FileCronRepo::new(cron_dir).expect("cron dir")),
         provider: None,
-        tool_registry: Arc::new(build_tool_registry(cwd.clone(), None, None)),
+        tool_registry: Arc::new(build_tool_registry(cwd.clone(), None, None, Vec::new())),
         permission: Permission::default(),
         cwd,
         context_policy: ContextPolicy::default(),
@@ -166,6 +171,31 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
     });
 
     let permission = permission_from_sandbox(config.sandbox.as_ref());
+    let mcp_servers: Vec<McpServerLaunch> = config
+        .mcp
+        .servers
+        .iter()
+        .map(|server| McpServerLaunch {
+            name: server.name.clone(),
+            command: server.command.clone(),
+            args: server.args.clone(),
+        })
+        .collect();
+    let discovered_mcp_tools = if mcp_servers.is_empty() {
+        Vec::new()
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| WireError::McpRuntime(e.to_string()))?;
+        match rt.block_on(discover_mcp_tools(&mcp_servers)) {
+            Ok(tools) => tools,
+            Err(e) => {
+                tracing::warn!("MCP discovery failed: {e}");
+                Vec::new()
+            }
+        }
+    };
 
     let cron_repo: Arc<dyn ccode_ports::cron::CronRepository> = Arc::new(cron_repo);
     let session_repo: Arc<dyn SessionRepository> = Arc::new(session_repo);
@@ -176,6 +206,7 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
         cwd.clone(),
         Some(Arc::clone(&cron_repo)),
         provider_arc.clone(),
+        discovered_mcp_tools,
     ));
 
     // Two-phase: register spawn_agent with back-reference to the completed registry
@@ -251,4 +282,6 @@ pub enum WireError {
     Provider(String),
     #[error("storage error: {0}")]
     Storage(String),
+    #[error("mcp runtime error: {0}")]
+    McpRuntime(String),
 }

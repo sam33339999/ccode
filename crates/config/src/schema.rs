@@ -6,10 +6,26 @@ pub struct Config {
     pub providers: ProvidersConfig,
     #[serde(default)]
     pub routing: RoutingConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
     pub sandbox: Option<SandboxConfig>,
     pub memory: Option<MemoryConfig>,
     #[serde(default)]
     pub context: ContextConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 // ── Context / compression ─────────────────────────────────────────────────────

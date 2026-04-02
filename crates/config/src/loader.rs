@@ -55,4 +55,28 @@ default_model = "anthropic/claude-3-5-sonnet"
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg.routing.strategy, "manual");
     }
+
+    #[test]
+    fn parses_mcp_servers() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[[mcp.servers]]
+name = "filesystem"
+command = "node"
+args = ["server.js", "--stdio"]
+"#
+        )
+        .unwrap();
+
+        let cfg = load_from(f.path()).unwrap();
+        assert_eq!(cfg.mcp.servers.len(), 1);
+        assert_eq!(cfg.mcp.servers[0].name, "filesystem");
+        assert_eq!(cfg.mcp.servers[0].command, "node");
+        assert_eq!(
+            cfg.mcp.servers[0].args,
+            vec!["server.js".to_string(), "--stdio".to_string()]
+        );
+    }
 }

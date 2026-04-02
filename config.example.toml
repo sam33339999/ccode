@@ -60,6 +60,14 @@ default_model = "claude-opus-4-5"
 # web_fetch = true
 # browser  = true
 
+# ── MCP Servers ────────────────────────────────────────────────────────────────
+# 啟動後會對每個 server 呼叫 tools/list，並把回傳工具註冊到工具表中。
+
+# [[mcp.servers]]
+# name = "filesystem"
+# command = "node"
+# args = ["./mcp-filesystem-server.js", "--stdio"]
+
 # ── Memory ─────────────────────────────────────────────────────────────────────
 # Agent 記憶系統設定
 

@@ -311,6 +311,14 @@ fn classify_wire_error(error: &WireError, ctx: &ErrorContext) -> ErrorEnvelope {
             Some("Check filesystem permissions and local disk state.".to_string()),
             ctx,
         ),
+        WireError::McpRuntime(msg) => ErrorEnvelope::new(
+            ErrorCategory::State,
+            "MCP runtime is unavailable.",
+            Some(format!(
+                "Check MCP server configuration and startup command. ({msg})"
+            )),
+            ctx,
+        ),
     }
 }
 

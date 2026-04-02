@@ -10,6 +10,8 @@ Primary evidence in current code:
 2. Session lifecycle API: `bridge/createSession.ts`
 3. Session ID compatibility shim: `bridge/sessionIdCompat.ts`
 4. Runtime protocol types and dependencies: `bridge/types.ts`
+5. Command entry path and bridge wiring: `entrypoints/cli.tsx:112`
+6. Session archive and shutdown behavior: `bridge/createSession.ts:263`
 
 ## 2. Rust Ownership Boundaries
 

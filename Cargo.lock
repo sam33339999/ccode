@@ -250,6 +250,10 @@ dependencies = [
 [[package]]
 name = "ccode-mcp-runtime"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+]
 
 [[package]]
 name = "ccode-platform"
@@ -289,6 +293,10 @@ dependencies = [
 [[package]]
 name = "ccode-remote-runtime"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "thiserror",
+]
 
 [[package]]
 name = "ccode-session"

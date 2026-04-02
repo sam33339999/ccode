@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 ccode-domain = { workspace = true }
 ccode-ports  = { workspace = true }
+async-trait  = { workspace = true }
 thiserror     = { workspace = true }
 futures-core  = { workspace = true }
 futures       = { workspace = true }
@@ -13,5 +14,4 @@ serde_json    = { workspace = true }
 tracing       = { workspace = true }
 
 [dev-dependencies]
-async-trait = { workspace = true }
 tokio       = { workspace = true }

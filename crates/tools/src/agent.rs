@@ -1,3 +1,4 @@
+use crate::worker_monitor::{publish_worker_event, WorkerMonitorEvent};
 use crate::ToolRegistry;
 use async_trait::async_trait;
 use ccode_application::{
@@ -172,6 +173,13 @@ impl ToolPort for AgentTool {
             .next()
             .ok_or_else(|| PortError::Tool("spawn failed: missing worker id".to_string()))?;
 
+        publish_worker_event(WorkerMonitorEvent {
+            task_id: task_id.clone(),
+            status: "Running".to_string(),
+            summary: Some("spawned by coordinator".to_string()),
+            timestamp: std::time::SystemTime::now(),
+        });
+
         let registry = Arc::clone(self.registry_cell.get().ok_or_else(|| {
             PortError::Tool("agent: tool registry not yet initialized".to_string())
         })?);
@@ -228,6 +236,18 @@ impl ToolPort for AgentTool {
                 },
             };
 
+            let status_label = match notification.status {
+                WorkerStatus::Running => "Running",
+                WorkerStatus::Completed => "Completed",
+                WorkerStatus::Failed => "Failed",
+                WorkerStatus::Cancelled => "Cancelled",
+            };
+            publish_worker_event(WorkerMonitorEvent {
+                task_id: notification.task_id.clone(),
+                status: status_label.to_string(),
+                summary: Some(notification.summary.clone()),
+                timestamp: std::time::SystemTime::now(),
+            });
             let _ = orchestrator.handle_notification(notification).await;
         });
 

@@ -1,5 +1,7 @@
 use ccode_application::commands::agent_run::AgentRunCommand;
 use ccode_bootstrap::AppState as BootstrapState;
+use ccode_bootstrap::worker_monitor;
+use chrono::{DateTime, Local};
 use clap::Args;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -16,7 +18,7 @@ use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -45,6 +47,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
     let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok());
     let mut app = AppState::default();
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
+    let mut worker_monitor_rx = worker_monitor::subscribe_worker_events();
     let mut runtime = RuntimeState::default();
     let always_allowed_tools: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
@@ -68,7 +71,13 @@ async fn run_ui_loop() -> anyhow::Result<()> {
     let mut last_draw = Instant::now() - DrawLimiter::interval();
     let mut dirty = true;
     while !app.should_quit {
-        drain_ui_events(&mut app, &mut runtime, &mut ui_rx, &mut dirty);
+        drain_ui_events(
+            &mut app,
+            &mut runtime,
+            &mut ui_rx,
+            &mut worker_monitor_rx,
+            &mut dirty,
+        );
         let timeout = DrawLimiter::next_timeout(last_draw, dirty);
         if event::poll(Duration::from_millis(50))? {
             let action = match event::read()? {
@@ -101,6 +110,14 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                     app.push_info_status(format!("tool decision: {} {}", name, decision.label()));
                     dirty = true;
                 }
+                AppAction::StopSelectedTask(task_id) => {
+                    if let RuntimeDeps::Ready { bootstrap_state } = &runtime_deps {
+                        spawn_task_stop(Arc::clone(bootstrap_state), task_id, ui_tx.clone());
+                    } else {
+                        app.push_error_status("provider unavailable".to_string());
+                    }
+                    dirty = true;
+                }
             }
         }
 
@@ -120,7 +137,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
 }
 
 fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
-    let [conversation_pane, status_pane, input_pane] = split_layout(frame.area());
+    let [conversation_pane, worker_pane, status_pane, input_pane] = split_layout(frame.area());
 
     let conversation = Paragraph::new(app.render_conversation())
         .block(
@@ -132,6 +149,29 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
         .scroll((app.conversation_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(conversation, conversation_pane);
+
+    let [worker_list_pane, worker_detail_pane] =
+        Layout::vertical([Constraint::Min(5), Constraint::Length(6)]).areas(worker_pane);
+    let worker_list =
+        Paragraph::new(app.render_worker_list(worker_list_pane.height, worker_list_pane.width))
+            .block(
+                Block::default()
+                    .title("Worker Tasks")
+                    .borders(Borders::ALL)
+                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+            )
+            .wrap(Wrap { trim: false });
+    frame.render_widget(worker_list, worker_list_pane);
+
+    let worker_details = Paragraph::new(app.render_worker_details())
+        .block(
+            Block::default()
+                .title("Worker Details")
+                .borders(Borders::ALL)
+                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(worker_details, worker_detail_pane);
 
     let status = Paragraph::new(app.render_status()).block(
         Block::default()
@@ -169,13 +209,17 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     }
 }
 
-fn split_layout(area: Rect) -> [Rect; 3] {
-    Layout::vertical([
+fn split_layout(area: Rect) -> [Rect; 4] {
+    let [top_pane, status_pane, input_pane] = Layout::vertical([
         Constraint::Min(5),
         Constraint::Length(5),
         Constraint::Length(3),
     ])
-    .areas(area)
+    .areas(area);
+    let [conversation_pane, worker_pane] =
+        Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)])
+            .areas(top_pane);
+    [conversation_pane, worker_pane, status_pane, input_pane]
 }
 
 fn centered_rect(area: Rect, width_percent: u16, height: u16) -> Rect {
@@ -248,6 +292,7 @@ struct AppState {
     active_assistant_idx: Option<usize>,
     conversation_scroll: u16,
     tool_approval: Option<ToolApprovalModal>,
+    worker_panel: WorkerPanelState,
     should_quit: bool,
 }
 
@@ -259,6 +304,7 @@ enum AppAction {
         name: String,
         decision: ToolApprovalAction,
     },
+    StopSelectedTask(String),
     Quit,
 }
 
@@ -486,6 +532,17 @@ impl AppState {
             KeyCode::Right => {
                 self.input.move_right();
                 AppAction::None
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.select_prev_worker_task();
+                AppAction::None
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.select_next_worker_task();
+                AppAction::None
+            }
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.stop_selected_worker_task_action()
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => self.scroll_up(1),
             KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => self.scroll_down(1),
@@ -731,9 +788,23 @@ impl AppState {
             .push(ConversationLine::ToolDone { name, success });
     }
 
-    fn push_worker_status(&mut self, task_id: String, status: String) {
-        self.conversation
-            .push(ConversationLine::WorkerStatus { task_id, status });
+    fn push_worker_status_with_details(
+        &mut self,
+        task_id: String,
+        status: String,
+        summary: Option<String>,
+        timestamp: SystemTime,
+    ) {
+        self.conversation.push(ConversationLine::WorkerStatus {
+            task_id: task_id.clone(),
+            status: status.clone(),
+        });
+        self.record_worker_event(WorkerUiEvent {
+            task_id,
+            status,
+            summary,
+            timestamp,
+        });
     }
 
     fn push_error_status(&mut self, message: String) {
@@ -844,6 +915,163 @@ impl AppState {
         rendered
     }
 
+    fn record_worker_event(&mut self, event: WorkerUiEvent) {
+        const MAX_WORKER_TASKS: usize = 500;
+        let selected_id = if self.worker_panel.manual_selection {
+            self.worker_panel
+                .tasks
+                .get(self.worker_panel.selected)
+                .map(|task| task.task_id.clone())
+        } else {
+            None
+        };
+
+        if let Some(existing_idx) = self
+            .worker_panel
+            .tasks
+            .iter()
+            .position(|task| task.task_id == event.task_id)
+        {
+            let mut existing = self.worker_panel.tasks.remove(existing_idx);
+            existing.status = event.status;
+            if event.summary.is_some() {
+                existing.summary = event.summary;
+            }
+            existing.updated_at = event.timestamp;
+            self.worker_panel.tasks.insert(0, existing);
+        } else {
+            self.worker_panel.tasks.insert(
+                0,
+                WorkerTaskEntry {
+                    task_id: event.task_id,
+                    status: event.status,
+                    summary: event.summary,
+                    started_at: event.timestamp,
+                    updated_at: event.timestamp,
+                },
+            );
+        }
+
+        if self.worker_panel.tasks.len() > MAX_WORKER_TASKS {
+            self.worker_panel.tasks.truncate(MAX_WORKER_TASKS);
+        }
+
+        if let Some(selected_id) = selected_id {
+            if let Some(idx) = self
+                .worker_panel
+                .tasks
+                .iter()
+                .position(|task| task.task_id == selected_id)
+            {
+                self.worker_panel.selected = idx;
+            }
+        } else {
+            self.worker_panel.selected = 0;
+        }
+        if self.worker_panel.selected >= self.worker_panel.tasks.len() {
+            self.worker_panel.selected = self.worker_panel.tasks.len().saturating_sub(1);
+        }
+    }
+
+    fn selected_worker_task(&self) -> Option<&WorkerTaskEntry> {
+        self.worker_panel.tasks.get(self.worker_panel.selected)
+    }
+
+    fn select_next_worker_task(&mut self) {
+        if self.worker_panel.tasks.is_empty() {
+            return;
+        }
+        self.worker_panel.manual_selection = true;
+        self.worker_panel.selected =
+            (self.worker_panel.selected + 1).min(self.worker_panel.tasks.len() - 1);
+    }
+
+    fn select_prev_worker_task(&mut self) {
+        if self.worker_panel.tasks.is_empty() {
+            return;
+        }
+        self.worker_panel.manual_selection = true;
+        self.worker_panel.selected = self.worker_panel.selected.saturating_sub(1);
+    }
+
+    fn stop_selected_worker_task_action(&self) -> AppAction {
+        let Some(selected) = self.selected_worker_task() else {
+            return AppAction::None;
+        };
+        if selected.status == "Running" {
+            AppAction::StopSelectedTask(selected.task_id.clone())
+        } else {
+            AppAction::None
+        }
+    }
+
+    fn render_worker_list(&self, height: u16, width: u16) -> Vec<Line<'static>> {
+        if self.worker_panel.tasks.is_empty() {
+            return vec![
+                Line::from("No worker tasks yet"),
+                Line::from(""),
+                Line::from("Keys: Alt+Up/Alt+Down select"),
+                Line::from("Alt+S stop running task"),
+            ];
+        }
+
+        let available_rows = height.saturating_sub(2).max(1) as usize;
+        let start = self
+            .worker_panel
+            .viewport_start
+            .min(self.worker_panel.tasks.len().saturating_sub(1));
+        let selected = self.worker_panel.selected;
+        let mut effective_start = start;
+        if selected < effective_start {
+            effective_start = selected;
+        } else if selected >= effective_start.saturating_add(available_rows) {
+            effective_start = selected.saturating_add(1).saturating_sub(available_rows);
+        }
+        let end = (effective_start + available_rows).min(self.worker_panel.tasks.len());
+
+        let mut lines = Vec::new();
+        for idx in effective_start..end {
+            let task = &self.worker_panel.tasks[idx];
+            let marker = if idx == self.worker_panel.selected {
+                ">"
+            } else {
+                " "
+            };
+            let row = format!(
+                "{marker} [{}] {}",
+                task.status,
+                truncate_to_width(task.task_id.as_str(), width.saturating_sub(16) as usize)
+            );
+            lines.push(Line::from(row));
+        }
+        lines
+    }
+
+    fn render_worker_details(&self) -> Vec<Line<'static>> {
+        let Some(task) = self.selected_worker_task() else {
+            return vec![
+                Line::from("task_id: -"),
+                Line::from("summary: -"),
+                Line::from("started_at: -"),
+                Line::from("updated_at: -"),
+                Line::from(""),
+                Line::from("Alt+S stops selected Running task"),
+            ];
+        };
+
+        vec![
+            Line::from(format!("task_id: {}", task.task_id)),
+            Line::from(format!(
+                "summary: {}",
+                task.summary.clone().unwrap_or_else(|| "-".to_string())
+            )),
+            Line::from(format!("started_at: {}", format_task_time(task.started_at))),
+            Line::from(format!("updated_at: {}", format_task_time(task.updated_at))),
+            Line::from(""),
+            Line::from("Alt+S stops selected Running task"),
+        ]
+    }
+
     fn input_cursor_position(&self, input_pane: Rect) -> (u16, u16) {
         let inner_x = input_pane.x.saturating_add(1);
         let inner_y = input_pane.y.saturating_add(1);
@@ -859,6 +1087,27 @@ impl AppState {
             inner_y.saturating_add(row.min(inner_height.saturating_sub(1))),
         )
     }
+}
+
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        let mut candidate = out.clone();
+        candidate.push(ch);
+        if UnicodeWidthStr::width(candidate.as_str()) > max_width {
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn format_task_time(ts: SystemTime) -> String {
+    let dt: DateTime<Local> = DateTime::from(ts);
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn prev_grapheme_boundary(text: &str, cursor: usize) -> usize {
@@ -907,9 +1156,36 @@ enum UiEvent {
     WorkerStatus {
         task_id: String,
         status: String,
+        summary: Option<String>,
+        timestamp: SystemTime,
     },
     Error(String),
     SessionReady(String),
+}
+
+#[derive(Clone, Debug)]
+struct WorkerUiEvent {
+    task_id: String,
+    status: String,
+    summary: Option<String>,
+    timestamp: SystemTime,
+}
+
+#[derive(Clone, Debug)]
+struct WorkerTaskEntry {
+    task_id: String,
+    status: String,
+    summary: Option<String>,
+    started_at: SystemTime,
+    updated_at: SystemTime,
+}
+
+#[derive(Default)]
+struct WorkerPanelState {
+    tasks: Vec<WorkerTaskEntry>,
+    selected: usize,
+    viewport_start: usize,
+    manual_selection: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -941,6 +1217,9 @@ fn drain_ui_events(
     app: &mut AppState,
     runtime: &mut RuntimeState,
     ui_rx: &mut tokio::sync::mpsc::UnboundedReceiver<UiEvent>,
+    worker_monitor_rx: &mut tokio::sync::broadcast::Receiver<
+        Arc<worker_monitor::WorkerMonitorEvent>,
+    >,
     dirty: &mut bool,
 ) {
     while let Ok(evt) = ui_rx.try_recv() {
@@ -960,7 +1239,12 @@ fn drain_ui_events(
             UiEvent::ToolError { name, message } => {
                 app.push_error_status(format!("tool {name}: {message}"));
             }
-            UiEvent::WorkerStatus { task_id, status } => app.push_worker_status(task_id, status),
+            UiEvent::WorkerStatus {
+                task_id,
+                status,
+                summary,
+                timestamp,
+            } => app.push_worker_status_with_details(task_id, status, summary, timestamp),
             UiEvent::Error(message) => {
                 runtime.in_flight = false;
                 app.push_error_status(message);
@@ -970,6 +1254,16 @@ fn drain_ui_events(
                 app.push_info_status(format!("session: {sid}"));
             }
         }
+        *dirty = true;
+    }
+
+    while let Ok(evt) = worker_monitor_rx.try_recv() {
+        app.push_worker_status_with_details(
+            evt.task_id.clone(),
+            evt.status.clone(),
+            evt.summary.clone(),
+            evt.timestamp,
+        );
         *dirty = true;
     }
 }
@@ -1054,9 +1348,15 @@ fn spawn_agent_turn(
                     )
                     && let Some(status) = worker_status_label(status_raw)
                 {
+                    let summary = value
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
                     let _ = tx.send(UiEvent::WorkerStatus {
                         task_id: task_id.to_string(),
                         status: status.to_string(),
+                        summary,
+                        timestamp: SystemTime::now(),
                     });
                 }
                 let _ = tx.send(UiEvent::ToolDone {
@@ -1097,6 +1397,63 @@ fn spawn_agent_turn(
     });
 }
 
+fn spawn_task_stop(
+    bootstrap_state: Arc<BootstrapState>,
+    task_id: String,
+    ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+) {
+    tokio::spawn(async move {
+        let registry = Arc::clone(&bootstrap_state.tool_registry);
+        let tool_ctx = Arc::new(bootstrap_state.tool_ctx());
+        let args = serde_json::json!({
+            "task_id": task_id.clone(),
+            "summary": "stopped from tui worker panel"
+        });
+
+        let _ = ui_tx.send(UiEvent::ToolStart {
+            name: "task_stop".to_string(),
+            args: args.clone(),
+        });
+
+        let result = registry
+            .execute("task_stop", args, &tool_ctx)
+            .await
+            .map_err(|err| err.to_string());
+
+        if let Ok(payload) = &result
+            && let Ok(value) = serde_json::from_str::<Value>(payload)
+            && let (Some(task_id), Some(status_raw)) = (
+                value.get("task_id").and_then(Value::as_str),
+                value.get("status").and_then(Value::as_str),
+            )
+            && let Some(status) = worker_status_label(status_raw)
+        {
+            let summary = value
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let _ = ui_tx.send(UiEvent::WorkerStatus {
+                task_id: task_id.to_string(),
+                status: status.to_string(),
+                summary,
+                timestamp: SystemTime::now(),
+            });
+        }
+
+        let _ = ui_tx.send(UiEvent::ToolDone {
+            name: "task_stop".to_string(),
+            success: result.is_ok(),
+        });
+
+        if let Err(message) = result {
+            let _ = ui_tx.send(UiEvent::ToolError {
+                name: "task_stop".to_string(),
+                message,
+            });
+        }
+    });
+}
+
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
@@ -1127,7 +1484,7 @@ fn install_panic_restoration_hook() {
 mod tests {
     use super::{
         AppAction, AppState, ConversationLine, DrawLimiter, StatusKind, ToolApprovalAction,
-        split_layout,
+        WorkerUiEvent, split_layout,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::layout::Rect;
@@ -1135,10 +1492,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn splits_into_three_panes() {
-        let [conversation, status, input] = split_layout(Rect::new(0, 0, 120, 40));
+    fn splits_into_four_panes() {
+        let [conversation, worker, status, input] = split_layout(Rect::new(0, 0, 120, 40));
 
-        assert_eq!(conversation.width, 120);
+        assert_eq!(conversation.width + worker.width, 120);
         assert_eq!(status.height, 5);
         assert_eq!(input.height, 3);
     }
@@ -1360,5 +1717,77 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn worker_panel_tracks_task_details_and_status_badges() {
+        let mut app = AppState::default();
+        app.record_worker_event(WorkerUiEvent {
+            task_id: "w-1".to_string(),
+            status: "Running".to_string(),
+            summary: Some("indexing".to_string()),
+            timestamp: std::time::UNIX_EPOCH + Duration::from_secs(1),
+        });
+        app.record_worker_event(WorkerUiEvent {
+            task_id: "w-1".to_string(),
+            status: "Completed".to_string(),
+            summary: Some("done".to_string()),
+            timestamp: std::time::UNIX_EPOCH + Duration::from_secs(3),
+        });
+
+        let selected = app
+            .selected_worker_task()
+            .expect("selected worker task should exist");
+        assert_eq!(selected.task_id, "w-1");
+        assert_eq!(selected.status, "Completed");
+        assert_eq!(selected.summary.as_deref(), Some("done"));
+        assert_eq!(
+            selected.started_at,
+            std::time::UNIX_EPOCH + Duration::from_secs(1)
+        );
+        assert_eq!(
+            selected.updated_at,
+            std::time::UNIX_EPOCH + Duration::from_secs(3)
+        );
+
+        let panel_lines = app.render_worker_list(20, 80);
+        assert!(
+            panel_lines
+                .iter()
+                .any(|line| line.to_string().contains("[Completed]")),
+            "worker list should render Completed status badge"
+        );
+    }
+
+    #[test]
+    fn worker_panel_selection_and_virtual_scroll_work_for_high_volume() {
+        let mut app = AppState::default();
+        for idx in 0..120u64 {
+            app.record_worker_event(WorkerUiEvent {
+                task_id: format!("w-{idx}"),
+                status: "Running".to_string(),
+                summary: Some(format!("task {idx}")),
+                timestamp: std::time::UNIX_EPOCH + Duration::from_secs(idx),
+            });
+        }
+
+        for _ in 0..80 {
+            app.select_next_worker_task();
+        }
+
+        let selected = app
+            .selected_worker_task()
+            .expect("selected worker task should exist");
+        assert_eq!(selected.task_id, "w-39");
+
+        let lines = app.render_worker_list(10, 80);
+        assert!(
+            lines.iter().all(|line| !line.to_string().contains("w-119")),
+            "virtual list should not render off-screen task rows"
+        );
+        assert!(
+            lines.iter().any(|line| line.to_string().contains(">")),
+            "selected row should be visible and marked"
+        );
     }
 }

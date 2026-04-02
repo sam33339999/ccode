@@ -1,4 +1,5 @@
 use crate::agent::map_orchestration_error;
+use crate::worker_monitor::{publish_worker_event, WorkerMonitorEvent};
 use async_trait::async_trait;
 use ccode_application::spec_contracts::{
     MultiAgentOrchestrator, WorkerResultNotification, WorkerStatus,
@@ -56,6 +57,8 @@ impl ToolPort for TaskStopTool {
             .await
             .map_err(map_orchestration_error)?;
 
+        let monitor_summary = summary.clone();
+
         let _ = self
             .orchestrator
             .handle_notification(WorkerResultNotification {
@@ -64,6 +67,13 @@ impl ToolPort for TaskStopTool {
                 summary,
             })
             .await;
+
+        publish_worker_event(WorkerMonitorEvent {
+            task_id: task_id.clone(),
+            status: "Cancelled".to_string(),
+            summary: Some(monitor_summary),
+            timestamp: std::time::SystemTime::now(),
+        });
 
         Ok(json!({
             "task_id": task_id,

@@ -30,6 +30,10 @@ pub mod exports {
     };
 }
 
+pub mod worker_monitor {
+    pub use ccode_tools::worker_monitor::{WorkerMonitorEvent, subscribe_worker_events};
+}
+
 /// Shared application state passed into every request handler.
 pub struct AppState {
     pub session_repo: Arc<dyn SessionRepository>,

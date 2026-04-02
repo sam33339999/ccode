@@ -7,5 +7,6 @@ pub mod shell;
 pub mod spawn_agent;
 pub mod task_stop;
 pub mod web;
+pub mod worker_monitor;
 
 pub use registry::ToolRegistry;

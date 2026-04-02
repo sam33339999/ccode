@@ -5,8 +5,11 @@ use ccode_ports::provider::{
     LlmError, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
 };
 use futures::StreamExt;
+use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::time::Duration;
+
+type ToolCallBuffer = HashMap<usize, (String, String, String)>;
 
 /// Shared HTTP client for OpenAI-compatible APIs.
 ///
@@ -156,8 +159,9 @@ impl OpenAiCompatClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(map_http_status_error(status.as_u16(), text));
+            return Err(map_http_status_error(status.as_u16(), &headers, text));
         }
 
         let chat: ChatResponse = resp
@@ -198,8 +202,9 @@ impl OpenAiCompatClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(map_http_status_error(status.as_u16(), text));
+            return Err(map_http_status_error(status.as_u16(), &headers, text));
         }
 
         let bytes_stream = resp.bytes_stream();
@@ -208,7 +213,7 @@ impl OpenAiCompatClient {
             tokio::pin!(bytes_stream);
             let mut buf = String::new();
             // Map from tool_call index -> (id, name, accumulated_arguments)
-            let mut tool_call_buf: HashMap<usize, (String, String, String)> = HashMap::new();
+            let mut tool_call_buf: ToolCallBuffer = HashMap::new();
 
             while let Some(chunk) = bytes_stream.next().await {
                 match chunk {
@@ -259,57 +264,12 @@ impl OpenAiCompatClient {
                                             tracing::debug!("skip unparseable SSE chunk: {e}");
                                         }
                                         Ok(chunk) => {
-                                            let usage = chunk.usage.map(map_usage);
-
-                                            for choice in chunk.choices {
-                                                // Accumulate text content
-                                                if let Some(content) = choice.delta.content
-                                                    && !content.is_empty()
-                                                {
-                                                    yield Ok(StreamEvent::Delta { content });
-                                                }
-                                                // Accumulate tool call deltas
-                                                if let Some(tc_deltas) = choice.delta.tool_calls {
-                                                    for tc_delta in tc_deltas {
-                                                        let entry = tool_call_buf
-                                                            .entry(tc_delta.index)
-                                                            .or_insert_with(|| (String::new(), String::new(), String::new()));
-                                                        if let Some(id) = tc_delta.id {
-                                                            entry.0 = id;
-                                                        }
-                                                        if let Some(func) = tc_delta.function {
-                                                            if let Some(name) = func.name {
-                                                                entry.1 = name;
-                                                            }
-                                                            if let Some(args) = func.arguments {
-                                                                entry.2.push_str(&args);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                if choice.finish_reason.is_some() {
-                                                    // Emit tool calls if any were buffered
-                                                    if !tool_call_buf.is_empty() {
-                                                        let mut indices: Vec<usize> = tool_call_buf.keys().cloned().collect();
-                                                        indices.sort();
-                                                        let tool_calls: Vec<ToolCall> = indices.iter().filter_map(|idx| {
-                                                            let (id, name, args) = tool_call_buf.get(idx)?;
-                                                            Some(ToolCall {
-                                                                id: id.clone(),
-                                                                name: name.clone(),
-                                                                arguments: args.clone(),
-                                                            })
-                                                        }).collect();
-                                                        if !tool_calls.is_empty() {
-                                                            yield Ok(StreamEvent::ToolCallDone { tool_calls });
-                                                        }
-                                                        tool_call_buf.clear();
-                                                    }
-                                                    if usage.is_some() {
-                                                        yield Ok(StreamEvent::Done { usage });
-                                                        return;
-                                                    }
-                                                }
+                                            let (events, done) = convert_chunk_to_events(chunk, &mut tool_call_buf);
+                                            for event in events {
+                                                yield Ok(event);
+                                            }
+                                            if done {
+                                                return;
                                             }
                                         }
                                     }
@@ -332,16 +292,39 @@ fn map_reqwest_error(e: reqwest::Error) -> LlmError {
     LlmError::Network(e.to_string())
 }
 
-fn map_http_status_error(status: u16, message: String) -> LlmError {
+fn map_http_status_error(status: u16, headers: &HeaderMap, message: String) -> LlmError {
     match status {
         401 | 403 => LlmError::AuthError(message),
         413 => LlmError::RequestTooLarge(message),
+        400 if is_request_too_large_message(&message) => LlmError::RequestTooLarge(message),
         429 => LlmError::RateLimited {
-            retry_after_ms: None,
+            retry_after_ms: retry_after_ms(headers),
         },
         404 => LlmError::ModelNotAvailable(message),
         _ => LlmError::ProviderError { status, message },
     }
+}
+
+fn is_request_too_large_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "too large",
+        "request_too_large",
+        "maximum context length",
+        "context length",
+        "token limit",
+        "prompt is too long",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    let secs = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.trim().parse::<u64>().ok())?;
+    secs.checked_mul(1000)
 }
 
 fn role_str(role: &Role) -> &'static str {
@@ -358,5 +341,166 @@ fn map_usage(u: UsageStats) -> TokenUsage {
         prompt_tokens: u.prompt_tokens,
         completion_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
+    }
+}
+
+fn flush_tool_calls(tool_call_buf: &mut ToolCallBuffer) -> Option<Vec<ToolCall>> {
+    if tool_call_buf.is_empty() {
+        return None;
+    }
+    let mut indices: Vec<usize> = tool_call_buf.keys().cloned().collect();
+    indices.sort();
+    let tool_calls: Vec<ToolCall> = indices
+        .iter()
+        .filter_map(|idx| {
+            let (id, name, args) = tool_call_buf.get(idx)?;
+            Some(ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                arguments: args.clone(),
+            })
+        })
+        .collect();
+    tool_call_buf.clear();
+    if tool_calls.is_empty() {
+        None
+    } else {
+        Some(tool_calls)
+    }
+}
+
+fn convert_chunk_to_events(
+    chunk: StreamChunk,
+    tool_call_buf: &mut ToolCallBuffer,
+) -> (Vec<StreamEvent>, bool) {
+    let mut events = Vec::new();
+    let usage = chunk.usage.map(map_usage);
+    let mut done = false;
+
+    for choice in chunk.choices {
+        if let Some(content) = choice.delta.content
+            && !content.is_empty()
+        {
+            events.push(StreamEvent::Delta { content });
+        }
+
+        if let Some(tc_deltas) = choice.delta.tool_calls {
+            for tc_delta in tc_deltas {
+                let entry = tool_call_buf
+                    .entry(tc_delta.index)
+                    .or_insert_with(|| (String::new(), String::new(), String::new()));
+                if let Some(id) = tc_delta.id {
+                    entry.0 = id;
+                }
+                if let Some(func) = tc_delta.function {
+                    if let Some(name) = func.name {
+                        entry.1 = name;
+                    }
+                    if let Some(args) = func.arguments {
+                        entry.2.push_str(&args);
+                    }
+                }
+            }
+        }
+
+        if choice.finish_reason.is_some() {
+            if let Some(tool_calls) = flush_tool_calls(tool_call_buf) {
+                events.push(StreamEvent::ToolCallDone { tool_calls });
+            }
+            if usage.is_some() {
+                events.push(StreamEvent::Done {
+                    usage: usage.clone(),
+                });
+                done = true;
+            }
+        }
+    }
+
+    (events, done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_400_too_large_to_request_too_large() {
+        let err = map_http_status_error(
+            400,
+            &HeaderMap::new(),
+            "maximum context length exceeded".to_string(),
+        );
+        match err {
+            LlmError::RequestTooLarge(msg) => assert!(msg.contains("context length")),
+            other => panic!("expected RequestTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_retry_after_on_429() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "12".parse().expect("valid header value"));
+        let err = map_http_status_error(429, &headers, "slow down".to_string());
+        match err {
+            LlmError::RateLimited { retry_after_ms } => assert_eq!(retry_after_ms, Some(12_000)),
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_stream_chunk_preserves_delta_then_tool_then_done_order() {
+        let mut buf = ToolCallBuffer::new();
+
+        let first = StreamChunk {
+            choices: vec![StreamChoice {
+                delta: DeltaContent {
+                    content: Some("hello ".to_string()),
+                    tool_calls: Some(vec![StreamToolCallDelta {
+                        index: 0,
+                        id: Some("call_1".to_string()),
+                        function: Some(StreamToolCallFunctionDelta {
+                            name: Some("lookup".to_string()),
+                            arguments: Some("{\"q\":\"".to_string()),
+                        }),
+                    }]),
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        };
+
+        let second = StreamChunk {
+            choices: vec![StreamChoice {
+                delta: DeltaContent {
+                    content: Some("world".to_string()),
+                    tool_calls: Some(vec![StreamToolCallDelta {
+                        index: 0,
+                        id: None,
+                        function: Some(StreamToolCallFunctionDelta {
+                            name: None,
+                            arguments: Some("rust\"}".to_string()),
+                        }),
+                    }]),
+                },
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: Some(UsageStats {
+                prompt_tokens: 5,
+                completion_tokens: 7,
+                total_tokens: 12,
+            }),
+        };
+
+        let (events_1, done_1) = convert_chunk_to_events(first, &mut buf);
+        let (events_2, done_2) = convert_chunk_to_events(second, &mut buf);
+
+        assert!(!done_1);
+        assert!(done_2);
+        assert!(matches!(&events_1[0], StreamEvent::Delta { content } if content == "hello "));
+        assert!(matches!(&events_2[0], StreamEvent::Delta { content } if content == "world"));
+        assert!(
+            matches!(&events_2[1], StreamEvent::ToolCallDone { tool_calls } if tool_calls.len() == 1 && tool_calls[0].arguments == "{\"q\":\"rust\"}")
+        );
+        assert!(matches!(&events_2[2], StreamEvent::Done { usage: Some(_) }));
     }
 }

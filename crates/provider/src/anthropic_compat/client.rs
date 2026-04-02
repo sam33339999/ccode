@@ -5,11 +5,13 @@ use ccode_ports::provider::{
     LlmError, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
 };
 use futures::StreamExt;
+use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::time::Duration;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
+type ToolUseBuffer = HashMap<usize, (String, String, String)>;
 
 /// HTTP client for the Anthropic Messages API.
 ///
@@ -208,8 +210,9 @@ impl AnthropicCompatClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(map_http_status_error(status.as_u16(), text));
+            return Err(map_http_status_error(status.as_u16(), &headers, text));
         }
 
         let ar: AnthropicResponse = resp
@@ -246,8 +249,9 @@ impl AnthropicCompatClient {
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(map_http_status_error(status.as_u16(), text));
+            return Err(map_http_status_error(status.as_u16(), &headers, text));
         }
 
         let bytes_stream = resp.bytes_stream();
@@ -255,11 +259,7 @@ impl AnthropicCompatClient {
         let s = stream! {
             tokio::pin!(bytes_stream);
             let mut buf = String::new();
-            let mut input_tokens: u32 = 0;
-            // Map from block index -> (id, name, accumulated_json)
-            let mut tool_use_buf: HashMap<usize, (String, String, String)> = HashMap::new();
-            // Track which block index is currently a tool_use block
-            let mut tool_use_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            let mut state = AnthropicStreamState::default();
 
             while let Some(chunk) = bytes_stream.next().await {
                 match chunk {
@@ -292,84 +292,15 @@ impl AnthropicCompatClient {
                                         Err(e) => {
                                             tracing::debug!("skip unparseable Anthropic SSE: {e}");
                                         }
-                                        Ok(event) => match event.event_type.as_str() {
-                                            "message_start" => {
-                                                if let Some(msg) = event.message
-                                                    && let Some(u) = msg.usage
-                                                {
-                                                    input_tokens = u.input_tokens;
-                                                }
+                                        Ok(event) => {
+                                            let (events, done) = convert_anthropic_event_to_events(event, &mut state);
+                                            for event in events {
+                                                yield Ok(event);
                                             }
-                                            "content_block_start" => {
-                                                if let (Some(block), Some(idx)) =
-                                                    (event.content_block, event.index)
-                                                    && block.block_type == "tool_use"
-                                                {
-                                                    tool_use_indices.insert(idx);
-                                                    tool_use_buf.insert(
-                                                        idx,
-                                                        (
-                                                            block.id.unwrap_or_default(),
-                                                            block.name.unwrap_or_default(),
-                                                            String::new(),
-                                                        ),
-                                                    );
-                                                }
-                                            }
-                                            "content_block_delta" => {
-                                                if let Some(delta) = event.delta {
-                                                    if delta.delta_type == "text_delta" {
-                                                        if let Some(text) = delta.text
-                                                            && !text.is_empty()
-                                                        {
-                                                            yield Ok(StreamEvent::Delta {
-                                                                content: text,
-                                                            });
-                                                        }
-                                                    } else if delta.delta_type == "input_json_delta"
-                                                        && let (Some(partial), Some(idx)) =
-                                                            (delta.partial_json, event.index)
-                                                        && let Some(entry) =
-                                                            tool_use_buf.get_mut(&idx)
-                                                    {
-                                                        entry.2.push_str(&partial);
-                                                    }
-                                                }
-                                            }
-                                            "content_block_stop" => {
-                                                // When a tool_use block stops, emit its tool call
-                                                if let Some(idx) = event.index
-                                                    && tool_use_indices.remove(&idx)
-                                                    && let Some((id, name, args)) =
-                                                        tool_use_buf.remove(&idx)
-                                                {
-                                                    let tool_calls = vec![ToolCall {
-                                                        id,
-                                                        name,
-                                                        arguments: args,
-                                                    }];
-                                                    yield Ok(StreamEvent::ToolCallDone { tool_calls });
-                                                }
-                                            }
-                                            "message_delta" => {
-                                                let output_tokens = event
-                                                    .usage
-                                                    .map(|u| u.output_tokens)
-                                                    .unwrap_or(0);
-                                                let usage = TokenUsage {
-                                                    prompt_tokens: input_tokens,
-                                                    completion_tokens: output_tokens,
-                                                    total_tokens: input_tokens + output_tokens,
-                                                };
-                                                yield Ok(StreamEvent::Done { usage: Some(usage) });
+                                            if done {
                                                 return;
                                             }
-                                            "message_stop" => {
-                                                yield Ok(StreamEvent::Done { usage: None });
-                                                return;
-                                            }
-                                            _ => {} // ping, etc.
-                                        },
+                                        }
                                     }
                                 }
                             }
@@ -390,14 +321,274 @@ fn map_reqwest_error(e: reqwest::Error) -> LlmError {
     LlmError::Network(e.to_string())
 }
 
-fn map_http_status_error(status: u16, message: String) -> LlmError {
+fn map_http_status_error(status: u16, headers: &HeaderMap, message: String) -> LlmError {
     match status {
         401 | 403 => LlmError::AuthError(message),
         413 => LlmError::RequestTooLarge(message),
+        400 if is_request_too_large_message(&message) => LlmError::RequestTooLarge(message),
         429 => LlmError::RateLimited {
-            retry_after_ms: None,
+            retry_after_ms: retry_after_ms(headers),
         },
         404 => LlmError::ModelNotAvailable(message),
         _ => LlmError::ProviderError { status, message },
+    }
+}
+
+fn is_request_too_large_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "too large",
+        "request_too_large",
+        "maximum context length",
+        "context length",
+        "token limit",
+        "prompt is too long",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    let secs = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.trim().parse::<u64>().ok())?;
+    secs.checked_mul(1000)
+}
+
+#[derive(Default)]
+struct AnthropicStreamState {
+    input_tokens: u32,
+    tool_use_buf: ToolUseBuffer,
+    tool_use_indices: std::collections::HashSet<usize>,
+}
+
+fn convert_anthropic_event_to_events(
+    event: AnthropicEvent,
+    state: &mut AnthropicStreamState,
+) -> (Vec<StreamEvent>, bool) {
+    let mut events = Vec::new();
+    let mut done = false;
+
+    match event.event_type.as_str() {
+        "message_start" => {
+            if let Some(msg) = event.message
+                && let Some(u) = msg.usage
+            {
+                state.input_tokens = u.input_tokens;
+            }
+        }
+        "content_block_start" => {
+            if let (Some(block), Some(idx)) = (event.content_block, event.index)
+                && block.block_type == "tool_use"
+            {
+                state.tool_use_indices.insert(idx);
+                state.tool_use_buf.insert(
+                    idx,
+                    (
+                        block.id.unwrap_or_default(),
+                        block.name.unwrap_or_default(),
+                        String::new(),
+                    ),
+                );
+            }
+        }
+        "content_block_delta" => {
+            if let Some(delta) = event.delta {
+                if delta.delta_type == "text_delta" {
+                    if let Some(text) = delta.text
+                        && !text.is_empty()
+                    {
+                        events.push(StreamEvent::Delta { content: text });
+                    }
+                } else if delta.delta_type == "input_json_delta"
+                    && let (Some(partial), Some(idx)) = (delta.partial_json, event.index)
+                    && let Some(entry) = state.tool_use_buf.get_mut(&idx)
+                {
+                    entry.2.push_str(&partial);
+                }
+            }
+        }
+        "content_block_stop" => {
+            if let Some(idx) = event.index
+                && state.tool_use_indices.remove(&idx)
+                && let Some((id, name, args)) = state.tool_use_buf.remove(&idx)
+            {
+                events.push(StreamEvent::ToolCallDone {
+                    tool_calls: vec![ToolCall {
+                        id,
+                        name,
+                        arguments: args,
+                    }],
+                });
+            }
+        }
+        "message_delta" => {
+            let output_tokens = event.usage.map(|u| u.output_tokens).unwrap_or(0);
+            let usage = TokenUsage {
+                prompt_tokens: state.input_tokens,
+                completion_tokens: output_tokens,
+                total_tokens: state.input_tokens + output_tokens,
+            };
+            events.push(StreamEvent::Done { usage: Some(usage) });
+            done = true;
+        }
+        "message_stop" => {
+            events.push(StreamEvent::Done { usage: None });
+            done = true;
+        }
+        _ => {}
+    }
+
+    (events, done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_400_too_large_to_request_too_large() {
+        let err = map_http_status_error(
+            400,
+            &HeaderMap::new(),
+            "request too large for model".to_string(),
+        );
+        match err {
+            LlmError::RequestTooLarge(msg) => assert!(msg.contains("too large")),
+            other => panic!("expected RequestTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_retry_after_on_429() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", "3".parse().expect("valid header value"));
+        let err = map_http_status_error(429, &headers, "rate limit".to_string());
+        match err {
+            LlmError::RateLimited { retry_after_ms } => assert_eq!(retry_after_ms, Some(3_000)),
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_stream_event_order_is_preserved() {
+        let mut state = AnthropicStreamState::default();
+
+        let _ = convert_anthropic_event_to_events(
+            AnthropicEvent {
+                event_type: "message_start".to_string(),
+                delta: None,
+                message: Some(AnthropicEventMessage {
+                    usage: Some(AnthropicUsage {
+                        input_tokens: 10,
+                        output_tokens: 0,
+                    }),
+                }),
+                usage: None,
+                content_block: None,
+                index: None,
+            },
+            &mut state,
+        );
+
+        let _ = convert_anthropic_event_to_events(
+            AnthropicEvent {
+                event_type: "content_block_start".to_string(),
+                delta: None,
+                message: None,
+                usage: None,
+                content_block: Some(AnthropicContentBlock {
+                    block_type: "tool_use".to_string(),
+                    id: Some("tool_1".to_string()),
+                    name: Some("search_docs".to_string()),
+                }),
+                index: Some(0),
+            },
+            &mut state,
+        );
+
+        let _ = convert_anthropic_event_to_events(
+            AnthropicEvent {
+                event_type: "content_block_delta".to_string(),
+                delta: Some(AnthropicEventDelta {
+                    delta_type: "input_json_delta".to_string(),
+                    text: None,
+                    partial_json: Some("{\"q\":\"".to_string()),
+                }),
+                message: None,
+                usage: None,
+                content_block: None,
+                index: Some(0),
+            },
+            &mut state,
+        );
+
+        let _ = convert_anthropic_event_to_events(
+            AnthropicEvent {
+                event_type: "content_block_delta".to_string(),
+                delta: Some(AnthropicEventDelta {
+                    delta_type: "input_json_delta".to_string(),
+                    text: None,
+                    partial_json: Some("rust\"}".to_string()),
+                }),
+                message: None,
+                usage: None,
+                content_block: None,
+                index: Some(0),
+            },
+            &mut state,
+        );
+
+        let (events_tool, done_tool) = convert_anthropic_event_to_events(
+            AnthropicEvent {
+                event_type: "content_block_stop".to_string(),
+                delta: None,
+                message: None,
+                usage: None,
+                content_block: None,
+                index: Some(0),
+            },
+            &mut state,
+        );
+        assert!(!done_tool);
+        assert!(
+            matches!(&events_tool[0], StreamEvent::ToolCallDone { tool_calls } if tool_calls.len() == 1 && tool_calls[0].arguments == "{\"q\":\"rust\"}")
+        );
+
+        let (events_text, done_text) = convert_anthropic_event_to_events(
+            AnthropicEvent {
+                event_type: "content_block_delta".to_string(),
+                delta: Some(AnthropicEventDelta {
+                    delta_type: "text_delta".to_string(),
+                    text: Some("done".to_string()),
+                    partial_json: None,
+                }),
+                message: None,
+                usage: None,
+                content_block: None,
+                index: Some(1),
+            },
+            &mut state,
+        );
+        assert!(!done_text);
+        assert!(matches!(&events_text[0], StreamEvent::Delta { content } if content == "done"));
+
+        let (events_done, done_done) = convert_anthropic_event_to_events(
+            AnthropicEvent {
+                event_type: "message_delta".to_string(),
+                delta: None,
+                message: None,
+                usage: Some(AnthropicDeltaUsage { output_tokens: 4 }),
+                content_block: None,
+                index: None,
+            },
+            &mut state,
+        );
+        assert!(done_done);
+        assert!(matches!(
+            &events_done[0],
+            StreamEvent::Done { usage: Some(_) }
+        ));
     }
 }

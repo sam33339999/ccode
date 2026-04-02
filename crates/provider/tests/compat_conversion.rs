@@ -1,6 +1,7 @@
 use ccode_provider::compat::convert::{
     AnthropicToOpenAiOptions, anthropic_request_to_openai_request,
-    anthropic_response_to_openai_response, openai_request_to_anthropic_request,
+    anthropic_response_to_openai_response, anthropic_tool_to_openai_function,
+    openai_function_to_anthropic_tool, openai_request_to_anthropic_request,
     openai_response_to_anthropic_response,
 };
 use ccode_provider::compat::request::{
@@ -141,4 +142,66 @@ fn anthropic_response_converts_back_to_openai_response() {
     assert_eq!(out.choices[0].finish_reason.as_deref(), Some("end_turn"));
     assert_eq!(out.usage.as_ref().map(|u| u.prompt_tokens), Some(9));
     assert_eq!(out.usage.as_ref().map(|u| u.completion_tokens), Some(3));
+}
+
+#[test]
+fn stop_reason_tool_use_maps_between_wire_formats() {
+    let openai_resp = OpenAiResponse {
+        id: "chatcmpl-tool".into(),
+        object: "chat.completion".into(),
+        created: 1,
+        model: "gpt-4.1".into(),
+        choices: vec![OpenAiChoice {
+            index: 0,
+            message: OpenAiMessageResponse {
+                role: "assistant".into(),
+                content: Some(String::new()),
+                reasoning_content: None,
+            },
+            finish_reason: Some("tool_calls".into()),
+        }],
+        usage: None,
+    };
+    let anthropic = openai_response_to_anthropic_response(openai_resp, "claude-3-7-sonnet");
+    assert_eq!(anthropic.stop_reason.as_deref(), Some("tool_use"));
+
+    let anthropic_resp = AnthropicResponse {
+        id: "msg-tool".into(),
+        response_type: "message".into(),
+        role: "assistant".into(),
+        content: vec![],
+        model: "claude-3-7-sonnet".into(),
+        stop_reason: Some("tool_use".into()),
+        usage: Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+        },
+    };
+    let openai = anthropic_response_to_openai_response(anthropic_resp, "gpt-4.1");
+    assert_eq!(
+        openai.choices[0].finish_reason.as_deref(),
+        Some("tool_calls")
+    );
+}
+
+#[test]
+fn tool_definition_schema_roundtrips_between_anthropic_and_openai() {
+    let anthropic_tool = serde_json::json!({
+        "name": "search_docs",
+        "description": "Search docs",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"}
+            },
+            "required": ["query"]
+        }
+    });
+
+    let openai_function = anthropic_tool_to_openai_function(anthropic_tool.clone())
+        .expect("anthropic->openai conversion should succeed");
+    let roundtrip = openai_function_to_anthropic_tool(openai_function)
+        .expect("openai->anthropic conversion should succeed");
+
+    assert_eq!(roundtrip, anthropic_tool);
 }

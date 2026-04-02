@@ -1,9 +1,9 @@
-use crate::openai_compat::OpenAiCompatClient;
+use crate::openai_compat::OpenAiCompatAdapter;
 use async_trait::async_trait;
 use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
 
 pub struct LlamaCppAdapter {
-    client: OpenAiCompatClient,
+    adapter: OpenAiCompatAdapter,
 }
 
 impl LlamaCppAdapter {
@@ -13,7 +13,7 @@ impl LlamaCppAdapter {
         default_model: impl Into<String>,
     ) -> Self {
         Self {
-            client: OpenAiCompatClient::new(api_key, base_url, default_model, vec![]),
+            adapter: OpenAiCompatAdapter::new("llamacpp", api_key, base_url, default_model, vec![]),
         }
     }
 }
@@ -21,22 +21,22 @@ impl LlamaCppAdapter {
 #[async_trait]
 impl LlmClient for LlamaCppAdapter {
     fn name(&self) -> &str {
-        "llamacpp"
+        self.adapter.name()
     }
 
     fn default_model(&self) -> &str {
-        &self.client.default_model
+        self.adapter.default_model()
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {
-        self.client.health_check().await
+        self.adapter.health_check().await
     }
 
     async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
-        self.client.complete(req).await
+        self.adapter.complete(req).await
     }
 
     async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
-        self.client.stream(req).await
+        self.adapter.stream(req).await
     }
 }

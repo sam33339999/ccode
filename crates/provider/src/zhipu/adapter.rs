@@ -1,9 +1,9 @@
-use crate::openai_compat::OpenAiCompatClient;
+use crate::openai_compat::OpenAiCompatAdapter;
 use async_trait::async_trait;
 use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
 
 pub struct ZhipuAdapter {
-    client: OpenAiCompatClient,
+    adapter: OpenAiCompatAdapter,
 }
 
 impl ZhipuAdapter {
@@ -18,7 +18,13 @@ impl ZhipuAdapter {
             extra_headers.push(("X-Title".into(), t));
         }
         Self {
-            client: OpenAiCompatClient::new(api_key, base_url, default_model, extra_headers),
+            adapter: OpenAiCompatAdapter::new(
+                "zhipu",
+                api_key,
+                base_url,
+                default_model,
+                extra_headers,
+            ),
         }
     }
 }
@@ -26,22 +32,22 @@ impl ZhipuAdapter {
 #[async_trait]
 impl LlmClient for ZhipuAdapter {
     fn name(&self) -> &str {
-        "zhipu"
+        self.adapter.name()
     }
 
     fn default_model(&self) -> &str {
-        &self.client.default_model
+        self.adapter.default_model()
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {
-        self.client.health_check().await
+        self.adapter.health_check().await
     }
 
     async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
-        self.client.complete(req).await
+        self.adapter.complete(req).await
     }
 
     async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
-        self.client.stream(req).await
+        self.adapter.stream(req).await
     }
 }

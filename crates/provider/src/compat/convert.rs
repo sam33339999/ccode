@@ -118,7 +118,7 @@ pub fn openai_response_to_anthropic_response(
         role: "assistant".to_string(),
         content,
         model: original_model.into(),
-        stop_reason,
+        stop_reason: stop_reason.map(|r| map_stop_reason_openai_to_anthropic(&r)),
         usage,
     }
 }
@@ -147,13 +147,75 @@ pub fn anthropic_response_to_openai_response(
                 content: Some(text),
                 reasoning_content: None,
             },
-            finish_reason: anthropic_resp.stop_reason,
+            finish_reason: anthropic_resp
+                .stop_reason
+                .map(|r| map_stop_reason_anthropic_to_openai(&r)),
         }],
         usage: Some(OpenAiUsage {
             prompt_tokens: anthropic_resp.usage.input_tokens,
             completion_tokens: anthropic_resp.usage.output_tokens,
             total_tokens: anthropic_resp.usage.input_tokens + anthropic_resp.usage.output_tokens,
         }),
+    }
+}
+
+pub fn anthropic_tool_to_openai_function(
+    anthropic_tool: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let name = anthropic_tool
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("anthropic tool missing string field: name")?;
+    let description = anthropic_tool
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("anthropic tool missing string field: description")?;
+    let parameters = anthropic_tool
+        .get("input_schema")
+        .cloned()
+        .ok_or("anthropic tool missing field: input_schema")?;
+
+    Ok(serde_json::json!({
+        "name": name,
+        "description": description,
+        "parameters": parameters
+    }))
+}
+
+pub fn openai_function_to_anthropic_tool(
+    openai_function: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let name = openai_function
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("openai function missing string field: name")?;
+    let description = openai_function
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("openai function missing string field: description")?;
+    let input_schema = openai_function
+        .get("parameters")
+        .cloned()
+        .ok_or("openai function missing field: parameters")?;
+
+    Ok(serde_json::json!({
+        "name": name,
+        "description": description,
+        "input_schema": input_schema
+    }))
+}
+
+fn map_stop_reason_openai_to_anthropic(reason: &str) -> String {
+    match reason {
+        "tool_calls" => "tool_use".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn map_stop_reason_anthropic_to_openai(reason: &str) -> String {
+    match reason {
+        "tool_use" => "tool_calls".to_string(),
+        other => other.to_string(),
     }
 }
 

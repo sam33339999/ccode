@@ -1,4 +1,8 @@
-use crate::{message::Message, session::SessionId};
+use crate::{
+    assistant_mode::{AssistantMode, ModeSwitchTrigger},
+    message::Message,
+    session::SessionId,
+};
 
 #[derive(Debug, Clone)]
 pub enum DomainEvent {
@@ -11,5 +15,11 @@ pub enum DomainEvent {
     },
     SessionDeleted {
         session_id: SessionId,
+    },
+    AssistantModeSwitched {
+        session_id: SessionId,
+        from_mode: AssistantMode,
+        to_mode: AssistantMode,
+        trigger: ModeSwitchTrigger,
     },
 }

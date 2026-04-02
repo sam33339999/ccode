@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod assistant_mode;
 pub mod cron;
 pub mod error;
 pub mod event;

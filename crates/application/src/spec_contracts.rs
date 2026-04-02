@@ -1,4 +1,9 @@
 use async_trait::async_trait;
+use ccode_domain::{
+    assistant_mode::{AssistantMode, ModeSwitchTrigger},
+    event::DomainEvent,
+    session::SessionId,
+};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -194,25 +199,127 @@ pub trait UltraplanService: Send + Sync {
     async fn archive_orphan(&self, session_id: &str) -> Result<(), UltraplanError>;
 }
 
-#[derive(Debug, Clone)]
-pub struct AssistantModeContext;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityPolicy {
+    pub allow_assistant_modes: bool,
+    pub allow_brief_mode: bool,
+    pub allow_channels_mode: bool,
+    pub blocked_tools: Vec<String>,
+    pub brief_blocked_tools: Vec<String>,
+}
+
+impl Default for CapabilityPolicy {
+    fn default() -> Self {
+        Self {
+            allow_assistant_modes: true,
+            allow_brief_mode: true,
+            allow_channels_mode: true,
+            blocked_tools: Vec::new(),
+            brief_blocked_tools: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolVisibilityMode {
+    All,
+    HideRestricted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantModeContext {
+    pub session_id: SessionId,
+    pub configured_mode: AssistantMode,
+    pub session_mode: Option<AssistantMode>,
+    pub policy_enabled: bool,
+    pub available_tools: Vec<String>,
+    pub capability_policy: CapabilityPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedModeSource {
+    Config,
+    Session,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KairosTelemetryTags {
+    pub mode: AssistantMode,
+    pub mode_source: ModeSwitchTrigger,
+    pub kairos_active: bool,
+    pub brief_active: bool,
+    pub channels_active: bool,
+    pub prompt_layer_count: usize,
+}
 
 #[derive(Debug, Clone)]
-pub struct AssistantModeDecision;
+pub struct AssistantModeDecision {
+    pub effective_mode: AssistantMode,
+    pub source: ResolvedModeSource,
+    pub switch_event: Option<DomainEvent>,
+    pub visible_tools: Vec<String>,
+    pub telemetry_tags: KairosTelemetryTags,
+    pub error: Option<KairosError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptPrecedenceLayer {
+    Base,
+    ModeDefault,
+    ModeOverride,
+    Policy,
+    Runtime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptComposeContext {
+    pub mode: AssistantMode,
+    pub policy_enabled: bool,
+    pub capability_policy: CapabilityPolicy,
+    pub base_prompt: Option<String>,
+    pub mode_prompt_override: Option<String>,
+    pub policy_prompt: Option<String>,
+    pub runtime_prompt: Option<String>,
+}
 
 #[derive(Debug, Clone)]
-pub struct PromptComposeContext;
+pub struct PromptComposeResult {
+    pub system_prompt: String,
+    pub precedence: Vec<PromptPrecedenceLayer>,
+    pub telemetry_tags: KairosTelemetryTags,
+    pub error: Option<KairosError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteInputContext {
+    pub session_id: SessionId,
+    pub current_mode: AssistantMode,
+    pub policy_enabled: bool,
+    pub capability_policy: CapabilityPolicy,
+    pub raw_input: String,
+    pub explicit_mode: Option<AssistantMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteSource {
+    SlashCommand,
+    ExplicitOverride,
+    Noop,
+    Conflict,
+}
 
 #[derive(Debug, Clone)]
-pub struct PromptComposeResult;
+pub struct RouteDecision {
+    pub source: RouteSource,
+    pub next_mode: AssistantMode,
+    pub passthrough_input: String,
+    pub command_consumed: bool,
+    pub switch_event: Option<DomainEvent>,
+    pub telemetry_tags: KairosTelemetryTags,
+    pub error: Option<KairosError>,
+}
 
-#[derive(Debug, Clone)]
-pub struct RouteInputContext;
-
-#[derive(Debug, Clone)]
-pub struct RouteDecision;
-
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum KairosError {
     #[error("disabled by policy")]
     DisabledByPolicy,

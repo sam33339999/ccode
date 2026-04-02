@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ccode-application = { workspace = true }
+ccode-remote-runtime = { workspace = true }
 ccode-cron = { path = "../cron" }
 ccode-state-store = { path = "../state-store" }
 async-trait = { workspace = true }

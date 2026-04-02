@@ -291,6 +291,7 @@ dependencies = [
  "async-trait",
  "ccode-application",
  "ccode-cron",
+ "ccode-remote-runtime",
  "ccode-state-store",
  "serde_json",
  "tokio",

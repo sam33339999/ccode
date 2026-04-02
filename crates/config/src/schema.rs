@@ -14,6 +14,18 @@ pub struct Config {
     pub context: ContextConfig,
     #[serde(default)]
     pub remote_runtime: RemoteRuntimeConfig,
+    #[serde(default)]
+    pub tui: TuiConfig,
+}
+
+/// TUI display and accessibility settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiConfig {
+    /// Color theme for the terminal UI.
+    /// Accepted values: `"default"` (16-color), `"high_contrast"` (bold+bright),
+    /// `"no_color"` (modifiers only).
+    /// Overridden automatically when `NO_COLOR` env var is set or `TERM=dumb`.
+    pub theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

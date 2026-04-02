@@ -10,8 +10,8 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
@@ -27,14 +27,210 @@ use super::output::{
     error_category_label, summarize_tool_args, worker_status_label,
 };
 
+// ── Color support detection ───────────────────────────────────────────────────
+
+/// Detected terminal color capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorSupport {
+    /// No color output: `NO_COLOR` env var set or `TERM=dumb`.
+    None,
+    /// Standard 16-color ANSI support.
+    Basic16,
+}
+
+fn detect_color_support() -> ColorSupport {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return ColorSupport::None;
+    }
+    match std::env::var("TERM").as_deref() {
+        Ok("dumb") | Ok("") => ColorSupport::None,
+        _ => ColorSupport::Basic16,
+    }
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+/// Named theme variants configurable via `~/.ccode/config.toml` `[tui]` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThemeName {
+    Default,
+    HighContrast,
+    NoColor,
+}
+
+impl ThemeName {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "high_contrast" => Self::HighContrast,
+            "no_color" => Self::NoColor,
+            _ => Self::Default,
+        }
+    }
+}
+
+/// All `Style`s used by the TUI in one place.  Constructed once at startup from
+/// the detected color support and the user's configured theme name.
+#[derive(Debug, Clone)]
+struct Theme {
+    panel_title: Style,
+    user_line: Style,
+    assistant_line: Style,
+    tool_start_line: Style,
+    tool_ok_line: Style,
+    tool_fail_line: Style,
+    tool_decision_line: Style,
+    worker_selected: Style,
+    worker_running: Style,
+    worker_completed: Style,
+    worker_failed: Style,
+    status_info: Style,
+    status_error: Style,
+    hint_line: Style,
+}
+
+impl Theme {
+    fn build(theme_name: ThemeName, color_support: ColorSupport) -> Self {
+        if color_support == ColorSupport::None || theme_name == ThemeName::NoColor {
+            return Self::no_color();
+        }
+        match theme_name {
+            ThemeName::HighContrast => Self::high_contrast(),
+            _ => Self::default_colors(),
+        }
+    }
+
+    fn default_colors() -> Self {
+        Self {
+            panel_title: Style::default().add_modifier(Modifier::BOLD),
+            user_line: Style::default().fg(Color::Cyan),
+            assistant_line: Style::default().fg(Color::Green),
+            tool_start_line: Style::default().fg(Color::Yellow),
+            tool_ok_line: Style::default().fg(Color::Green),
+            tool_fail_line: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            tool_decision_line: Style::default().fg(Color::Magenta),
+            worker_selected: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            worker_running: Style::default().fg(Color::Yellow),
+            worker_completed: Style::default().fg(Color::Green),
+            worker_failed: Style::default().fg(Color::Red),
+            status_info: Style::default().fg(Color::Cyan),
+            status_error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            hint_line: Style::default().fg(Color::DarkGray),
+        }
+    }
+
+    fn high_contrast() -> Self {
+        Self {
+            panel_title: Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED),
+            user_line: Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+            assistant_line: Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+            tool_start_line: Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+            tool_ok_line: Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+            tool_fail_line: Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED),
+            tool_decision_line: Style::default()
+                .fg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+            worker_selected: Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED),
+            worker_running: Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+            worker_completed: Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+            worker_failed: Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+            status_info: Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+            status_error: Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED),
+            hint_line: Style::default().fg(Color::White),
+        }
+    }
+
+    fn no_color() -> Self {
+        Self {
+            panel_title: Style::default().add_modifier(Modifier::BOLD),
+            user_line: Style::default().add_modifier(Modifier::BOLD),
+            assistant_line: Style::default(),
+            tool_start_line: Style::default(),
+            tool_ok_line: Style::default(),
+            tool_fail_line: Style::default().add_modifier(Modifier::BOLD),
+            tool_decision_line: Style::default(),
+            worker_selected: Style::default().add_modifier(Modifier::BOLD),
+            worker_running: Style::default(),
+            worker_completed: Style::default(),
+            worker_failed: Style::default().add_modifier(Modifier::BOLD),
+            status_info: Style::default(),
+            status_error: Style::default().add_modifier(Modifier::BOLD),
+            hint_line: Style::default(),
+        }
+    }
+}
+
+// ── Terminal capability check ─────────────────────────────────────────────────
+
+/// Returns `true` when the current terminal can support full raw-mode TUI.
+/// Checks for `TERM=dumb` and attempts to probe raw-mode availability.
+fn terminal_supports_tui() -> bool {
+    match std::env::var("TERM").as_deref() {
+        Ok("dumb") | Ok("") => return false,
+        _ => {}
+    }
+    // A quick non-destructive probe: if crossterm cannot enter raw mode, fall back.
+    match enable_raw_mode() {
+        Ok(()) => {
+            let _ = disable_raw_mode();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+// ── Entry points ──────────────────────────────────────────────────────────────
+
 #[derive(Args, Default)]
 pub struct TuiArgs {}
 
 pub async fn run(_args: TuiArgs) -> anyhow::Result<()> {
+    if !terminal_supports_tui() {
+        eprintln!("[tui] terminal does not support raw mode — falling back to REPL");
+        return super::repl::run(super::repl::ReplArgs {
+            session: None,
+            persona: None,
+            no_confirm: false,
+        })
+        .await;
+    }
     run_ui_loop().await
 }
 
 async fn run_ui_loop() -> anyhow::Result<()> {
+    // Resolve the user's preferred theme via bootstrap (best-effort; falls back to "").
+    let tui_theme_name = ccode_bootstrap::tui_theme().unwrap_or_default();
+    let color_support = detect_color_support();
+    let theme = Theme::build(ThemeName::from_str(tui_theme_name.as_str()), color_support);
+
     install_panic_restoration_hook();
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
@@ -45,7 +241,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
     terminal.clear()?;
 
     let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok());
-    let mut app = AppState::default();
+    let mut app = AppState::with_theme(theme);
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let mut worker_monitor_rx = worker_monitor::subscribe_worker_events();
     let mut runtime = RuntimeState::default();
@@ -137,6 +333,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
 }
 
 fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
+    let t = &app.theme;
     let [conversation_pane, worker_pane, status_pane, input_pane] = split_layout(frame.area());
 
     let conversation = Paragraph::new(app.render_conversation())
@@ -144,7 +341,7 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
             Block::default()
                 .title("Conversation")
                 .borders(Borders::ALL)
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(t.panel_title),
         )
         .scroll((app.conversation_scroll, 0))
         .wrap(Wrap { trim: false });
@@ -158,7 +355,7 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
                 Block::default()
                     .title("Worker Tasks")
                     .borders(Borders::ALL)
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(t.panel_title),
             )
             .wrap(Wrap { trim: false });
     frame.render_widget(worker_list, worker_list_pane);
@@ -168,26 +365,28 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
             Block::default()
                 .title("Worker Details")
                 .borders(Borders::ALL)
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(t.panel_title),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(worker_details, worker_detail_pane);
 
-    let status = Paragraph::new(app.render_status()).block(
+    let status = Paragraph::new(app.render_status_lines()).block(
         Block::default()
             .title("Status")
             .borders(Borders::ALL)
-            .title_style(Style::default().add_modifier(Modifier::BOLD)),
+            .title_style(t.panel_title),
     );
     frame.render_widget(status, status_pane);
 
+    let input_title =
+        "Input  [Enter]=send  [Shift+Enter]=newline  [Ctrl+C/Esc]=quit  [PgUp/PgDn]=scroll";
     let input = Paragraph::new(app.render_input())
         .wrap(Wrap { trim: false })
         .block(
             Block::default()
-                .title("Input")
+                .title(input_title)
                 .borders(Borders::ALL)
-                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                .title_style(t.hint_line),
         );
     frame.render_widget(input, input_pane);
     if !app.has_pending_tool_approval() {
@@ -200,9 +399,9 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
         let modal_widget = Paragraph::new(modal.render_lines())
             .block(
                 Block::default()
-                    .title("Tool Approval Required")
+                    .title("Tool Approval Required  [y]=allow  [n]=deny  [a]=always-allow")
                     .borders(Borders::ALL)
-                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+                    .title_style(t.panel_title),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(modal_widget, modal_area);
@@ -279,7 +478,6 @@ enum ConversationLine {
     },
 }
 
-#[derive(Default)]
 struct AppState {
     conversation: Vec<ConversationLine>,
     status: VecDeque<StatusLine>,
@@ -294,6 +492,34 @@ struct AppState {
     tool_approval: Option<ToolApprovalModal>,
     worker_panel: WorkerPanelState,
     should_quit: bool,
+    theme: Theme,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::with_theme(Theme::no_color())
+    }
+}
+
+impl AppState {
+    fn with_theme(theme: Theme) -> Self {
+        Self {
+            conversation: Vec::new(),
+            status: VecDeque::new(),
+            input: InputBuffer::default(),
+            input_history: VecDeque::new(),
+            history_cursor: None,
+            history_draft: None,
+            ime_preedit: None,
+            suppress_enter_submit_once: false,
+            active_assistant_idx: None,
+            conversation_scroll: 0,
+            tool_approval: None,
+            worker_panel: WorkerPanelState::default(),
+            should_quit: false,
+            theme,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -841,20 +1067,30 @@ impl AppState {
     }
 
     fn render_conversation(&self) -> Vec<Line<'static>> {
+        let t = &self.theme;
         self.conversation
             .iter()
             .flat_map(|entry| match entry {
                 ConversationLine::User(text) => {
-                    vec![Line::from(format!("You: {text}"))]
+                    vec![Line::from(vec![
+                        Span::styled("You: ", t.user_line),
+                        Span::raw(text.clone()),
+                    ])]
                 }
                 ConversationLine::Assistant(text) => {
                     if text.is_empty() {
-                        vec![Line::from("Assistant:")]
+                        vec![Line::from(vec![Span::styled(
+                            "Assistant:",
+                            t.assistant_line,
+                        )])]
                     } else {
                         let mut lines = Vec::new();
                         for (idx, line) in text.lines().enumerate() {
                             if idx == 0 {
-                                lines.push(Line::from(format!("Assistant: {line}")));
+                                lines.push(Line::from(vec![
+                                    Span::styled("Assistant: ", t.assistant_line),
+                                    Span::raw(line.to_string()),
+                                ]));
                             } else {
                                 lines.push(Line::from(format!("  {line}")));
                             }
@@ -866,18 +1102,27 @@ impl AppState {
                     }
                 }
                 ConversationLine::ToolStart { name, args_summary } => {
-                    vec![Line::from(format!("[tool:start] {name} ({args_summary})"))]
+                    vec![Line::from(vec![Span::styled(
+                        format!("[tool:start] {name} ({args_summary})"),
+                        t.tool_start_line,
+                    )])]
                 }
                 ConversationLine::ToolDone { name, success } => {
-                    let marker = if *success { "[ok]" } else { "[fail]" };
-                    vec![Line::from(format!("[tool:done] {name} {marker}"))]
+                    let (marker, style) = if *success {
+                        ("[ok]", t.tool_ok_line)
+                    } else {
+                        ("[fail]", t.tool_fail_line)
+                    };
+                    vec![Line::from(vec![Span::styled(
+                        format!("[tool:done] {name} {marker}"),
+                        style,
+                    )])]
                 }
                 ConversationLine::ToolDecision { name, decision } => {
-                    vec![Line::from(format!(
-                        "[tool:decision] {} {}",
-                        name,
-                        decision.label()
-                    ))]
+                    vec![Line::from(vec![Span::styled(
+                        format!("[tool:decision] {} {}", name, decision.label()),
+                        t.tool_decision_line,
+                    )])]
                 }
                 ConversationLine::WorkerStatus { task_id, status } => {
                     vec![Line::from(format!("[worker] {task_id} {status}"))]
@@ -886,19 +1131,25 @@ impl AppState {
             .collect()
     }
 
-    fn render_status(&self) -> String {
+    fn render_status_lines(&self) -> Vec<Line<'static>> {
         self.status
             .iter()
             .rev()
             .take(4)
             .map(|line| match &line.kind {
-                StatusKind::Info => format!("[info] {}", line.message),
-                StatusKind::Error(category) => {
-                    format!("[{}] {}", error_category_label(*category), line.message)
-                }
+                StatusKind::Info => Line::from(vec![
+                    Span::styled("[*] ", self.theme.status_info),
+                    Span::styled(format!("[info] {}", line.message), self.theme.status_info),
+                ]),
+                StatusKind::Error(category) => Line::from(vec![
+                    Span::styled("[!] ", self.theme.status_error),
+                    Span::styled(
+                        format!("[{}] {}", error_category_label(*category), line.message),
+                        self.theme.status_error,
+                    ),
+                ]),
             })
-            .collect::<Vec<_>>()
-            .join("\n")
+            .collect()
     }
 
     fn render_input(&self) -> String {
@@ -1008,10 +1259,15 @@ impl AppState {
     fn render_worker_list(&self, height: u16, width: u16) -> Vec<Line<'static>> {
         if self.worker_panel.tasks.is_empty() {
             return vec![
-                Line::from("No worker tasks yet"),
+                Line::from(vec![Span::styled(
+                    "No worker tasks yet",
+                    self.theme.hint_line,
+                )]),
                 Line::from(""),
-                Line::from("Keys: Alt+Up/Alt+Down select"),
-                Line::from("Alt+S stop running task"),
+                Line::from(vec![Span::styled(
+                    "Keys: Alt+Up/Alt+Down=select  Alt+S=stop",
+                    self.theme.hint_line,
+                )]),
             ];
         }
 
@@ -1032,17 +1288,27 @@ impl AppState {
         let mut lines = Vec::new();
         for idx in effective_start..end {
             let task = &self.worker_panel.tasks[idx];
-            let marker = if idx == self.worker_panel.selected {
-                ">"
-            } else {
-                " "
+            let is_selected = idx == self.worker_panel.selected;
+            let marker = if is_selected { ">" } else { " " };
+            let status_style = match task.status.as_str() {
+                "Running" => self.theme.worker_running,
+                "Completed" => self.theme.worker_completed,
+                "Failed" | "Cancelled" => self.theme.worker_failed,
+                _ => Style::default(),
             };
-            let row = format!(
-                "{marker} [{}] {}",
-                task.status,
-                truncate_to_width(task.task_id.as_str(), width.saturating_sub(16) as usize)
-            );
-            lines.push(Line::from(row));
+            let row_style = if is_selected {
+                self.theme.worker_selected
+            } else {
+                Style::default()
+            };
+            let task_id_truncated =
+                truncate_to_width(task.task_id.as_str(), width.saturating_sub(16) as usize);
+            let line = Line::from(vec![
+                Span::styled(format!("{marker} "), row_style),
+                Span::styled(format!("[{}]", task.status), status_style),
+                Span::styled(format!(" {task_id_truncated}"), row_style),
+            ]);
+            lines.push(line);
         }
         lines
     }
@@ -1486,6 +1752,8 @@ mod tests {
         AppAction, AppState, ConversationLine, DrawLimiter, StatusKind, ToolApprovalAction,
         WorkerUiEvent, split_layout,
     };
+    #[allow(unused_imports)]
+    use super::{ColorSupport, Theme, ThemeName};
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::layout::Rect;
     use serde_json::json;
@@ -1640,7 +1908,12 @@ mod tests {
     fn error_status_uses_category_label() {
         let mut app = AppState::default();
         app.push_error_status("authentication failed with api key".to_string());
-        let rendered = app.render_status();
+        let lines = app.render_status_lines();
+        let rendered: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(rendered.contains("[auth]"));
     }
 
@@ -1788,6 +2061,106 @@ mod tests {
         assert!(
             lines.iter().any(|line| line.to_string().contains(">")),
             "selected row should be visible and marked"
+        );
+    }
+
+    #[test]
+    fn no_color_theme_uses_no_fg_colors() {
+        use super::{ColorSupport, Theme, ThemeName};
+        use ratatui::style::Color;
+        let theme = Theme::build(ThemeName::NoColor, ColorSupport::Basic16);
+        // no_color theme must not assign any foreground color
+        assert!(
+            theme.user_line.fg.is_none() || theme.user_line.fg == Some(Color::Reset),
+            "no_color user_line must have no fg color"
+        );
+        assert!(
+            theme.status_error.fg.is_none() || theme.status_error.fg == Some(Color::Reset),
+            "no_color status_error must have no fg color"
+        );
+    }
+
+    #[test]
+    fn default_theme_with_no_color_env_produces_no_color_theme() {
+        use super::{ColorSupport, Theme, ThemeName};
+        use ratatui::style::Color;
+        // Regardless of the configured theme name, ColorSupport::None forces no-color.
+        let theme = Theme::build(ThemeName::Default, ColorSupport::None);
+        assert!(
+            theme.user_line.fg.is_none() || theme.user_line.fg == Some(Color::Reset),
+            "ColorSupport::None must force no fg colors"
+        );
+    }
+
+    #[test]
+    fn default_theme_assigns_colors() {
+        use super::{ColorSupport, Theme, ThemeName};
+        use ratatui::style::Color;
+        let theme = Theme::build(ThemeName::Default, ColorSupport::Basic16);
+        assert_eq!(theme.user_line.fg, Some(Color::Cyan));
+        assert_eq!(theme.assistant_line.fg, Some(Color::Green));
+        assert_eq!(theme.status_error.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn high_contrast_theme_assigns_bright_colors() {
+        use super::{ColorSupport, Theme, ThemeName};
+        use ratatui::style::Color;
+        let theme = Theme::build(ThemeName::HighContrast, ColorSupport::Basic16);
+        assert_eq!(theme.user_line.fg, Some(Color::LightCyan));
+        assert_eq!(theme.assistant_line.fg, Some(Color::LightGreen));
+        assert_eq!(theme.status_error.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn render_status_lines_prefixes_info_and_error_indicators() {
+        let mut app = AppState::default();
+        app.push_info_status("all good".to_string());
+        app.push_error_status("connection timeout".to_string());
+        let lines = app.render_status_lines();
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Non-color indicators must be present regardless of theme
+        assert!(text.contains("[*]"), "info indicator [*] must appear");
+        assert!(text.contains("[!]"), "error indicator [!] must appear");
+        // Text category labels must also be present
+        assert!(text.contains("[info]"), "[info] label must appear");
+        assert!(
+            text.contains("[transport]"),
+            "[transport] label must appear"
+        );
+    }
+
+    #[test]
+    fn render_conversation_includes_non_color_tool_markers() {
+        let mut app = AppState::default();
+        app.push_tool_done("shell".to_string(), true);
+        app.push_tool_done("shell".to_string(), false);
+        let lines = app.render_conversation();
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("[ok]"), "[ok] marker must appear");
+        assert!(text.contains("[fail]"), "[fail] marker must appear");
+    }
+
+    #[test]
+    fn worker_list_hint_shows_key_hints_when_empty() {
+        let app = AppState::default();
+        let lines = app.render_worker_list(10, 80);
+        let text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("Alt+Up") || text.contains("Keys"),
+            "key hints must be visible when worker panel is empty"
         );
     }
 }

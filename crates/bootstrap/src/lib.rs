@@ -152,6 +152,14 @@ fn wire_spawn_agent(
     registry
 }
 
+/// Returns the TUI theme name from `~/.ccode/config.toml`, or `None` if unset.
+/// Returns `None` silently on any config error (missing file, parse failure).
+/// Used by the TUI startup path to select the initial color theme before the
+/// full bootstrap wiring runs.
+pub fn tui_theme() -> Option<String> {
+    ccode_config::load().ok().and_then(|cfg| cfg.tui.theme)
+}
+
 /// Production wiring for gateway/server — loads config from `~/.ccode/config.toml`.
 /// Uses `sandbox.cwd` from config as the working directory (falls back to `current_dir`).
 /// For CLI usage, call [`wire_from_config_with_cwd`] with `Some(current_dir())` instead.

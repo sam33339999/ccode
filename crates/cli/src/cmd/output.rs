@@ -1,9 +1,10 @@
 use anyhow::Error as AnyError;
+use ccode_application::commands::agent_run::estimate_tokens_from_chars;
 use ccode_application::error::AppError;
 use ccode_bootstrap::WireError;
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
@@ -167,6 +168,39 @@ impl StreamFormatter {
             rendered.push_str(worker_line.as_str());
         }
         rendered
+    }
+}
+
+pub struct StreamProgress {
+    started_at: Instant,
+    last_report_at: Instant,
+    output_chars: usize,
+}
+
+impl StreamProgress {
+    pub fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            started_at: now,
+            last_report_at: now,
+            output_chars: 0,
+        }
+    }
+
+    pub fn on_delta(&mut self, content: &str) -> Option<String> {
+        self.output_chars += content.chars().count();
+        let now = Instant::now();
+        if now.duration_since(self.last_report_at) < Duration::from_secs(1) {
+            return None;
+        }
+        self.last_report_at = now;
+        Some(self.render_line(estimate_tokens_from_chars(self.output_chars)))
+    }
+
+    pub fn render_line(&self, output_tokens: usize) -> String {
+        let elapsed = self.started_at.elapsed().as_secs_f64().max(0.001);
+        let tps = output_tokens as f64 / elapsed;
+        format!("[stream] out={output_tokens} tok, {tps:.1} tok/s")
     }
 }
 
@@ -426,7 +460,7 @@ fn classify_message_into_envelope(message: &str, ctx: &ErrorContext) -> ErrorEnv
             } else {
                 ErrorEnvelope::new(
                     ErrorCategory::State,
-                    "Unexpected internal error occurred.",
+                    &format!("Unexpected internal error occurred. Detail: {message}"),
                     Some("Retry the command. If it persists, report the correlation ID.".to_string()),
                     ctx,
                 )
@@ -697,5 +731,14 @@ mod tests {
         let rendered = render_error(&err, &ErrorContext::unknown());
         assert!(rendered.contains("provider:openrouter"));
         assert!(rendered.contains("session_id:s-77"));
+    }
+
+    #[test]
+    fn stream_progress_renders_token_stats() {
+        let mut progress = StreamProgress::new();
+        let _ = progress.on_delta("1234");
+        let line = progress.render_line(estimate_tokens_from_chars(8));
+        assert!(line.contains("out=2 tok"));
+        assert!(line.contains("tok/s"));
     }
 }

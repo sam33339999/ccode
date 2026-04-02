@@ -289,16 +289,33 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
 
 fn context_policy_from_config(cfg: &ccode_config::schema::ContextConfig) -> ContextPolicy {
     let defaults = ContextPolicy::default();
+    let compress_chars_threshold = cfg.compress_chars_threshold.unwrap_or_else(|| {
+        match (cfg.max_context_tokens, cfg.compress_threshold_ratio) {
+            (Some(max_tokens), Some(ratio)) if max_tokens > 0 => {
+                let ratio = ratio.clamp(0.0, 1.0);
+                if ratio == 0.0 {
+                    defaults.compress_chars_threshold
+                } else {
+                    ((max_tokens as f64) * (ratio as f64) * (ccode_application::commands::agent_run::CHARS_PER_TOKEN_ESTIMATE as f64))
+                        .floor() as usize
+                }
+            }
+            _ => defaults.compress_chars_threshold,
+        }
+    });
+
     ContextPolicy {
-        compress_chars_threshold: cfg
-            .compress_chars_threshold
-            .unwrap_or(defaults.compress_chars_threshold),
+        compress_chars_threshold,
         keep_recent_messages: cfg
             .keep_recent_messages
             .unwrap_or(defaults.keep_recent_messages),
         tool_result_max_chars: cfg
             .tool_result_max_chars
             .unwrap_or(defaults.tool_result_max_chars),
+        max_agent_iterations: cfg
+            .max_agent_iterations
+            .unwrap_or(defaults.max_agent_iterations),
+        default_max_tokens: cfg.default_max_tokens.or(defaults.default_max_tokens),
     }
 }
 
@@ -356,7 +373,7 @@ pub enum WireError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ccode_config::schema::SandboxConfig;
+    use ccode_config::schema::{ContextConfig, SandboxConfig};
 
     #[test]
     fn sandbox_defaults_to_fail_closed_when_missing() {
@@ -387,5 +404,34 @@ mod tests {
         assert!(matches!(permission.shell, ShellPolicy::None));
         assert!(!permission.web_fetch);
         assert!(!permission.browser);
+    }
+
+    #[test]
+    fn context_threshold_prefers_explicit_chars_value() {
+        let policy = context_policy_from_config(&ContextConfig {
+            max_context_tokens: Some(200_000),
+            compress_threshold_ratio: Some(0.8),
+            compress_chars_threshold: Some(123_456),
+            keep_recent_messages: None,
+            tool_result_max_chars: None,
+            max_agent_iterations: None,
+            default_max_tokens: None,
+        });
+        assert_eq!(policy.compress_chars_threshold, 123_456);
+    }
+
+    #[test]
+    fn context_threshold_supports_ratio_of_max_context_tokens() {
+        let policy = context_policy_from_config(&ContextConfig {
+            max_context_tokens: Some(200_000),
+            compress_threshold_ratio: Some(0.8),
+            compress_chars_threshold: None,
+            keep_recent_messages: None,
+            tool_result_max_chars: None,
+            max_agent_iterations: None,
+            default_max_tokens: None,
+        });
+        // 200k * 0.8 * 4 chars/token = 640k chars
+        assert_eq!(policy.compress_chars_threshold, 640_000);
     }
 }

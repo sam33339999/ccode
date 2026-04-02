@@ -93,8 +93,15 @@ fn default_ccr_retry_delay_ms() -> u64 {
 /// Controls the agentic loop's context window management.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ContextConfig {
+    /// Model max context tokens, used with `compress_threshold_ratio`.
+    /// Example: `200_000`.
+    pub max_context_tokens: Option<usize>,
+    /// Compression trigger ratio against `max_context_tokens`.
+    /// Example: `0.8` means compress when estimated context reaches 80%.
+    pub compress_threshold_ratio: Option<f32>,
     /// Trigger compression when total context exceeds this many characters
     /// (rough estimate: 4 chars ≈ 1 token). Default: 600_000 (~150k tokens).
+    /// If set, this value overrides `max_context_tokens * compress_threshold_ratio`.
     pub compress_chars_threshold: Option<usize>,
     /// Number of most-recent messages to keep verbatim after compression.
     /// Default: 8.
@@ -102,6 +109,12 @@ pub struct ContextConfig {
     /// Truncate a single tool result that exceeds this many characters.
     /// Default: 40_000.
     pub tool_result_max_chars: Option<usize>,
+    /// Maximum iterations for the agentic loop (tool-call rounds).
+    /// Default: 50.
+    pub max_agent_iterations: Option<usize>,
+    /// Default `max_tokens` sent to the LLM per request.
+    /// If unset, the provider's built-in default applies (e.g. 4096 for Anthropic).
+    pub default_max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

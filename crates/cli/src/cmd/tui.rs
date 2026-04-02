@@ -75,10 +75,6 @@ struct Theme {
     panel_title: Style,
     user_line: Style,
     assistant_line: Style,
-    tool_start_line: Style,
-    tool_ok_line: Style,
-    tool_fail_line: Style,
-    tool_decision_line: Style,
     worker_selected: Style,
     worker_running: Style,
     worker_completed: Style,
@@ -104,10 +100,6 @@ impl Theme {
             panel_title: Style::default().add_modifier(Modifier::BOLD),
             user_line: Style::default().fg(Color::Cyan),
             assistant_line: Style::default().fg(Color::Green),
-            tool_start_line: Style::default().fg(Color::Yellow),
-            tool_ok_line: Style::default().fg(Color::Green),
-            tool_fail_line: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            tool_decision_line: Style::default().fg(Color::Magenta),
             worker_selected: Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -130,19 +122,6 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             assistant_line: Style::default()
                 .fg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD),
-            tool_start_line: Style::default()
-                .fg(Color::LightYellow)
-                .add_modifier(Modifier::BOLD),
-            tool_ok_line: Style::default()
-                .fg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD),
-            tool_fail_line: Style::default()
-                .fg(Color::LightRed)
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::UNDERLINED),
-            tool_decision_line: Style::default()
-                .fg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
             worker_selected: Style::default()
                 .fg(Color::LightCyan)
@@ -173,10 +152,6 @@ impl Theme {
             panel_title: Style::default().add_modifier(Modifier::BOLD),
             user_line: Style::default().add_modifier(Modifier::BOLD),
             assistant_line: Style::default(),
-            tool_start_line: Style::default(),
-            tool_ok_line: Style::default(),
-            tool_fail_line: Style::default().add_modifier(Modifier::BOLD),
-            tool_decision_line: Style::default(),
             worker_selected: Style::default().add_modifier(Modifier::BOLD),
             worker_running: Style::default(),
             worker_completed: Style::default(),
@@ -483,22 +458,6 @@ struct StatusLine {
 enum ConversationLine {
     User(String),
     Assistant(String),
-    ToolStart {
-        name: String,
-        args_summary: String,
-    },
-    ToolDone {
-        name: String,
-        success: bool,
-    },
-    ToolDecision {
-        name: String,
-        decision: ToolApprovalAction,
-    },
-    ToolResult {
-        name: String,
-        output: String,
-    },
     WorkerStatus {
         task_id: String,
         status: String,
@@ -1054,10 +1013,6 @@ impl AppState {
         if let Some(response_tx) = modal.response_tx.take() {
             let _ = response_tx.send(decision.to_confirmation_decision());
         }
-        self.conversation.push(ConversationLine::ToolDecision {
-            name: modal.tool_name.clone(),
-            decision,
-        });
         AppAction::ToolApprovalResolved {
             name: modal.tool_name,
             decision,
@@ -1065,20 +1020,24 @@ impl AppState {
     }
 
     fn push_tool_start(&mut self, name: String, args: Value) {
-        self.conversation.push(ConversationLine::ToolStart {
-            name,
-            args_summary: summarize_tool_args(&args),
-        });
+        self.push_info_status(format!(
+            "[tool:start] {name} ({})",
+            summarize_tool_args(&args)
+        ));
     }
 
     fn push_tool_done(&mut self, name: String, success: bool) {
-        self.conversation
-            .push(ConversationLine::ToolDone { name, success });
+        let marker = if success { "[ok]" } else { "[fail]" };
+        self.push_info_status(format!("[tool:done] {name} {marker}"));
     }
 
     fn push_tool_result(&mut self, name: String, output: String) {
-        self.conversation
-            .push(ConversationLine::ToolResult { name, output });
+        if output.is_empty() {
+            self.push_info_status(format!("[tool:result] {name}"));
+            return;
+        }
+        let first_line = output.lines().next().unwrap_or_default();
+        self.push_info_status(format!("[tool:result] {name} {first_line}"));
     }
 
     fn push_worker_status_with_details(
@@ -1167,39 +1126,6 @@ impl AppState {
                         }
                         lines
                     }
-                }
-                ConversationLine::ToolStart { name, args_summary } => {
-                    vec![Line::from(vec![Span::styled(
-                        format!("[tool:start] {name} ({args_summary})"),
-                        t.tool_start_line,
-                    )])]
-                }
-                ConversationLine::ToolDone { name, success } => {
-                    let (marker, style) = if *success {
-                        ("[ok]", t.tool_ok_line)
-                    } else {
-                        ("[fail]", t.tool_fail_line)
-                    };
-                    vec![Line::from(vec![Span::styled(
-                        format!("[tool:done] {name} {marker}"),
-                        style,
-                    )])]
-                }
-                ConversationLine::ToolDecision { name, decision } => {
-                    vec![Line::from(vec![Span::styled(
-                        format!("[tool:decision] {} {}", name, decision.label()),
-                        t.tool_decision_line,
-                    )])]
-                }
-                ConversationLine::ToolResult { name, output } => {
-                    let mut lines = vec![Line::from(vec![Span::styled(
-                        format!("[tool:result] {name}"),
-                        t.tool_ok_line,
-                    )])];
-                    for line in output.lines() {
-                        lines.push(Line::from(format!("  {line}")));
-                    }
-                    lines
                 }
                 ConversationLine::WorkerStatus { task_id, status } => {
                     vec![Line::from(format!("[worker] {task_id} {status}"))]
@@ -1895,7 +1821,7 @@ mod tests {
         app.push_tool_done("shell".to_string(), true);
         app.push_tool_done("shell".to_string(), false);
 
-        let lines = app.render_conversation();
+        let lines = app.render_status_lines();
         assert!(lines.iter().any(|l| l.to_string().contains("[ok]")));
         assert!(lines.iter().any(|l| l.to_string().contains("[fail]")));
     }
@@ -2042,12 +1968,11 @@ mod tests {
             other => panic!("expected deny decision, got {other:?}"),
         }
         assert!(!app.has_pending_tool_approval());
-        let rendered = app.render_conversation();
         assert!(
-            rendered
+            app.render_conversation()
                 .iter()
-                .any(|line| line.to_string().contains("[tool:decision] shell deny")),
-            "deny decision should be logged in conversation pane"
+                .all(|line| !line.to_string().contains("[tool:decision]")),
+            "tool decision should not be logged in conversation pane"
         );
     }
 
@@ -2228,11 +2153,11 @@ mod tests {
     }
 
     #[test]
-    fn render_conversation_includes_non_color_tool_markers() {
+    fn render_status_includes_non_color_tool_markers() {
         let mut app = AppState::default();
         app.push_tool_done("shell".to_string(), true);
         app.push_tool_done("shell".to_string(), false);
-        let lines = app.render_conversation();
+        let lines = app.render_status_lines();
         let text: String = lines
             .iter()
             .map(|l| l.to_string())

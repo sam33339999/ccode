@@ -5,7 +5,7 @@ use ccode_domain::{
     session::{Session, SessionId},
 };
 use ccode_ports::{
-    provider::{LlmClient, LlmError, LlmRequest, LlmStream, StreamEvent, ToolDefinition},
+    provider::{LlmClient, LlmError, LlmRequest, LlmStream, StreamEvent, TokenUsage, ToolDefinition},
     repositories::SessionRepository,
 };
 use futures::StreamExt;
@@ -28,6 +28,12 @@ pub struct ContextPolicy {
     /// Truncate any single tool result exceeding this many characters.
     /// Default: 40_000 (~10k tokens).
     pub tool_result_max_chars: usize,
+    /// Maximum iterations for the agentic loop (tool-call rounds).
+    /// Default: 50.
+    pub max_agent_iterations: usize,
+    /// Default `max_tokens` sent to the LLM per request.
+    /// `None` means the provider's built-in default applies.
+    pub default_max_tokens: Option<u32>,
 }
 
 impl Default for ContextPolicy {
@@ -36,6 +42,8 @@ impl Default for ContextPolicy {
             compress_chars_threshold: 600_000,
             keep_recent_messages: 8,
             tool_result_max_chars: 40_000,
+            max_agent_iterations: 50,
+            default_max_tokens: None,
         }
     }
 }
@@ -45,6 +53,23 @@ pub struct AgentRunCommand<R> {
     provider: Arc<dyn LlmClient>,
     context: ContextPolicy,
     computer_use_lifecycle: Option<Arc<dyn ComputerUseLifecycle>>,
+}
+
+/// Heuristic used for local token estimation when provider usage is unavailable.
+pub const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
+
+#[derive(Debug, Clone, Default)]
+pub struct RunMetrics {
+    pub last_usage: Option<TokenUsage>,
+    pub estimated_output_tokens: usize,
+    pub emitted_output_chars: usize,
+    pub compression_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub session_id: SessionId,
+    pub metrics: RunMetrics,
 }
 
 type ExecuteToolFn = dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
@@ -99,8 +124,33 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         on_delta: &(dyn Fn(String) + Send + Sync),
         execute_tool: &ExecuteToolFn,
     ) -> Result<SessionId, AppError> {
+        let outcome = self
+            .run_with_metrics(
+                session_id,
+                system_prompt,
+                user_content,
+                tools,
+                on_delta,
+                execute_tool,
+            )
+            .await?;
+        Ok(outcome.session_id)
+    }
+
+    pub async fn run_with_metrics(
+        &self,
+        session_id: Option<String>,
+        system_prompt: Option<String>,
+        user_content: String,
+        tools: Vec<ToolDefinition>,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+        execute_tool: &ExecuteToolFn,
+    ) -> Result<RunOutcome, AppError> {
         let lifecycle = self.computer_use_lifecycle.as_deref();
         let now = now_ms();
+        let mut emitted_output_chars: usize = 0;
+        let mut compression_count: usize = 0;
+        let mut final_usage: Option<TokenUsage> = None;
 
         let mut session = match session_id {
             Some(ref id) => {
@@ -126,24 +176,29 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         session.add_message(Message::new(msg_id, Role::User, user_content, now), now);
         self.repo.save(&session).await?;
 
-        const MAX_ITERATIONS: usize = 10;
+        let max_iterations = self.context.max_agent_iterations;
 
-        for _iter in 0..MAX_ITERATIONS {
+        for _iter in 0..max_iterations {
             // ── Context compression ────────────────────────────────────────────
             // Trigger on total character size (not message count) to catch large
             // tool results that would overflow the model's context window.
-            let total_chars: usize = session.messages.iter().map(|m| m.content.len()).sum();
+            let total_chars: usize = session
+                .messages
+                .iter()
+                .map(|m| m.content.chars().count())
+                .sum();
             if total_chars > self.context.compress_chars_threshold {
                 session =
                     compress_context(session, &*self.provider, self.context.keep_recent_messages)
                         .await?;
                 self.repo.save(&session).await?;
+                compression_count += 1;
             }
 
             let req = LlmRequest {
                 messages: session.messages.clone(),
                 model: None,
-                max_tokens: None,
+                max_tokens: self.context.default_max_tokens,
                 temperature: None,
                 tools: tools.clone(),
             };
@@ -152,8 +207,6 @@ impl<R: SessionRepository> AgentRunCommand<R> {
 
             let mut assistant_content = String::new();
             let mut captured_tool_calls: Vec<ccode_domain::message::ToolCall> = Vec::new();
-            let mut last_usage = None;
-
             while let Some(event) = stream.next().await {
                 match event {
                     Err(err @ LlmError::StreamInterrupted(_)) => {
@@ -163,13 +216,16 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                     Err(err) => return Err(AppError::from(err)),
                     Ok(StreamEvent::Delta { content }) => {
                         on_delta(content.clone());
+                        emitted_output_chars += content.chars().count();
                         assistant_content.push_str(&content);
                     }
                     Ok(StreamEvent::ToolCallDone { tool_calls }) => {
                         captured_tool_calls.extend(tool_calls);
                     }
                     Ok(StreamEvent::Done { usage }) => {
-                        last_usage = usage;
+                        if usage.is_some() {
+                            final_usage = usage;
+                        }
                         break;
                     }
                 }
@@ -229,11 +285,24 @@ impl<R: SessionRepository> AgentRunCommand<R> {
             }
             self.repo.save(&session).await?;
 
-            let _ = last_usage; // suppress unused warning
+        }
+
+        if session.messages.iter().rev().any(|m| m.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())) {
+            tracing::warn!(
+                "[agent] stopped after {max_iterations} iterations — increase context.max_agent_iterations if the task needs more rounds"
+            );
         }
 
         run_after_turn_cleanup(lifecycle).await;
-        Ok(session.id)
+        Ok(RunOutcome {
+            session_id: session.id,
+            metrics: RunMetrics {
+                last_usage: final_usage,
+                estimated_output_tokens: estimate_tokens_from_chars(emitted_output_chars),
+                emitted_output_chars,
+                compression_count,
+            },
+        })
     }
 
     /// Append the user message to the session (creating it if needed), then
@@ -400,6 +469,10 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+pub fn estimate_tokens_from_chars(chars: usize) -> usize {
+    chars.div_ceil(CHARS_PER_TOKEN_ESTIMATE)
 }
 
 #[cfg(test)]
@@ -617,5 +690,57 @@ mod tests {
 
         assert_eq!(lifecycle.before_calls.load(Ordering::SeqCst), 1);
         assert_eq!(lifecycle.cleanup_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn run_with_metrics_returns_usage_and_estimated_tokens() {
+        let repo = MockRepo::default();
+        let provider = Arc::new(MockProvider {
+            streams: Mutex::new(VecDeque::from([vec![
+                Ok(StreamEvent::Delta {
+                    content: "abcdefgh".to_string(),
+                }),
+                Ok(StreamEvent::Done {
+                    usage: Some(TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                    }),
+                }),
+            ]])),
+        });
+        let cmd = AgentRunCommand::new(repo, provider);
+
+        let outcome = cmd
+            .run_with_metrics(
+                None,
+                None,
+                "hello".to_string(),
+                Vec::new(),
+                &|_| {},
+                &|_, _| Box::pin(async { Ok(String::new()) }),
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(outcome.metrics.estimated_output_tokens, 2);
+        assert_eq!(outcome.metrics.emitted_output_chars, 8);
+        assert_eq!(
+            outcome
+                .metrics
+                .last_usage
+                .as_ref()
+                .expect("usage expected")
+                .completion_tokens,
+            5
+        );
+    }
+
+    #[test]
+    fn estimate_tokens_uses_4_chars_per_token_with_round_up() {
+        assert_eq!(estimate_tokens_from_chars(0), 0);
+        assert_eq!(estimate_tokens_from_chars(1), 1);
+        assert_eq!(estimate_tokens_from_chars(4), 1);
+        assert_eq!(estimate_tokens_from_chars(5), 2);
     }
 }

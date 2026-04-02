@@ -121,3 +121,25 @@ retry_delay_ms = 200
 # [memory.embedding.zhipu]
 # api_key = "your-zhipu-api-key"
 # model   = "embedding-3"
+
+# ── Context Compression ───────────────────────────────────────────────────────
+# 使用本地粗估：4 chars ≈ 1 token。
+# 建議同時設定 max_context_tokens 與 compress_threshold_ratio，
+# 例如 200k 上下文在 0.8 會於約 160k tokens 時觸發壓縮。
+
+# [context]
+# max_context_tokens = 200000
+# compress_threshold_ratio = 0.8
+# keep_recent_messages = 8
+# tool_result_max_chars = 40000
+#
+# Agent 迴圈上限（每次 tool call 算一輪）。預設 50。
+# max_agent_iterations = 50
+#
+# 每次 LLM 請求的 max_tokens。未設定時使用 provider 預設值（Anthropic = 4096）。
+# 本地模型建議設為 8192 或更高，以避免回覆被截斷。
+# default_max_tokens = 16384
+#
+# 進階：若要直接用絕對值（字元）可設定：
+# compress_chars_threshold = 640000
+# （此欄位會覆蓋 ratio 計算結果）

@@ -155,7 +155,7 @@ impl ToolPort for FsEditTool {
             (joined, replaced_count)
         } else {
             return Err(PortError::Tool(
-                "provide either old_string or from_line+to_line".into(),
+                "missing old_string parameter. Usage: provide old_string (the text to find) and new_string (the replacement). Example: {\"path\":\"file.md\", \"old_string\":\"原文\", \"new_string\":\"新文\"}".into(),
             ));
         };
 

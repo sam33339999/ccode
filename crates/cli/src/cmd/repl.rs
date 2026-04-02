@@ -7,7 +7,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use super::output::{
-    ErrorContext, StreamFormatter, ToolConfirmationDecision, confirmation_prompt,
+    ErrorContext, StreamFormatter, StreamProgress, ToolConfirmationDecision, confirmation_prompt,
     parse_confirmation_input, render_error_message,
 };
 #[derive(Args)]
@@ -155,9 +155,11 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                     print!("Agent: ");
                     let _ = std::io::stdout().flush();
                     let formatter_for_delta = formatter.clone();
+                    let progress_for_delta = Arc::new(Mutex::new(StreamProgress::new()));
+                    let progress_for_report = progress_for_delta.clone();
 
-                    let sid = handle.block_on(async {
-                        cmd.run(
+                    let outcome = handle.block_on(async {
+                        cmd.run_with_metrics(
                             session_id.clone(),
                             persona_once.take(),
                             input,
@@ -169,6 +171,12 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                                     .push_delta(content.as_str());
                                 print!("{}", rendered);
                                 let _ = std::io::stdout().flush();
+                                if let Some(progress_line) =
+                                    progress_for_delta.lock().unwrap().on_delta(content.as_str())
+                                {
+                                    eprint!("\r{progress_line}");
+                                    let _ = std::io::stderr().flush();
+                                }
                             }),
                             &execute_tool,
                         )
@@ -181,8 +189,17 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                         })
                     })?;
 
+                    let output_tokens = outcome
+                        .metrics
+                        .last_usage
+                        .as_ref()
+                        .map(|usage| usage.completion_tokens as usize)
+                        .unwrap_or(outcome.metrics.estimated_output_tokens);
+                    let progress_line = progress_for_report.lock().unwrap().render_line(output_tokens);
+
                     println!();
-                    session_id = Some(sid.to_string());
+                    eprintln!("\r{progress_line}");
+                    session_id = Some(outcome.session_id.to_string());
                 }
                 Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
                 Err(e) => return Err(e.into()),

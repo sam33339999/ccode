@@ -6,7 +6,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use super::output::{
-    ErrorContext, StreamFormatter, ToolConfirmationDecision, confirmation_prompt,
+    ErrorContext, StreamFormatter, StreamProgress, ToolConfirmationDecision, confirmation_prompt,
     parse_confirmation_input, render_error_message,
 };
 
@@ -63,8 +63,10 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
     let always_allowed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     let no_confirm = args.no_confirm;
     let formatter = Arc::new(Mutex::new(StreamFormatter::new()));
+    let progress = Arc::new(Mutex::new(StreamProgress::new()));
 
     let on_delta_formatter = Arc::clone(&formatter);
+    let on_delta_progress = Arc::clone(&progress);
     let on_delta = move |content: String| {
         let rendered = on_delta_formatter
             .lock()
@@ -72,6 +74,10 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
             .push_delta(content.as_str());
         print!("{}", rendered);
         let _ = std::io::stdout().flush();
+        if let Some(progress_line) = on_delta_progress.lock().unwrap().on_delta(content.as_str()) {
+            eprint!("\r{progress_line}");
+            let _ = std::io::stderr().flush();
+        }
     };
 
     let registry = Arc::new(registry);
@@ -140,8 +146,8 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
         })
     };
 
-    let session_id = cmd
-        .run(
+    let outcome = cmd
+        .run_with_metrics(
             args.session,
             args.persona,
             args.message,
@@ -157,7 +163,16 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
             )
         })?;
 
+    let output_tokens = outcome
+        .metrics
+        .last_usage
+        .as_ref()
+        .map(|usage| usage.completion_tokens as usize)
+        .unwrap_or(outcome.metrics.estimated_output_tokens);
+    let progress_line = progress.lock().unwrap().render_line(output_tokens);
+
     println!();
-    eprintln!("[session: {}]", session_id);
+    eprintln!("\r{progress_line}");
+    eprintln!("[session: {}]", outcome.session_id);
     Ok(())
 }

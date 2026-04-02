@@ -5,6 +5,7 @@ pub mod mode_coordinator_service;
 pub mod queries;
 pub mod remote_session_service;
 pub mod spec_contracts;
+pub mod ultraplan_service;
 
 #[cfg(test)]
 mod remote_session_service_tests;

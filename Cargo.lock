@@ -332,6 +332,7 @@ name = "ccode-remote-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde_json",
  "thiserror",
 ]
 

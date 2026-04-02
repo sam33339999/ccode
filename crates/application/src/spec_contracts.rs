@@ -6,22 +6,67 @@ use ccode_domain::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct CreateRemoteSessionRequest {
     pub environment_id: String,
     pub title: Option<String>,
+    pub permission_mode: Option<String>,
+    pub events: Vec<SessionEvent>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionEvent {
+    pub event_type: String,
+    pub payload_json: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchivePolicy {
+    pub timeout: Duration,
     pub idempotent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RemoteSessionState {
+    Pending,
+    Running,
+    Idle,
+    RequiresAction,
+    Archived,
+    Expired,
+    Failed,
 }
 
 #[derive(Debug, Clone)]
 pub struct RemoteSessionSummary {
     pub session_id: String,
-    pub state: String,
+    pub title: Option<String>,
+    pub environment_id: Option<String>,
+    pub state: RemoteSessionState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveResult {
+    Archived,
+    AlreadyArchived,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CcrClientError {
+    #[error("http error: {0}")]
+    Http(String),
+    #[error("timeout")]
+    Timeout,
+    #[error("unauthorized")]
+    Unauthorized,
+    #[error("forbidden")]
+    Forbidden,
+    #[error("not found")]
+    NotFound,
+    #[error("invalid payload")]
+    InvalidPayload,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -32,10 +77,25 @@ pub enum RemoteSessionError {
     EntitlementDenied,
     #[error("invalid state transition")]
     InvalidStateTransition,
+    #[error("session not found")]
+    NotFound,
+    #[error("session expired")]
+    Expired,
     #[error("auth unavailable")]
     AuthUnavailable,
     #[error("upstream error: {0}")]
     Upstream(String),
+}
+
+#[async_trait]
+pub trait CcrClient: Send + Sync {
+    async fn create(
+        &self,
+        req: CreateRemoteSessionRequest,
+    ) -> Result<RemoteSessionSummary, CcrClientError>;
+    async fn get(&self, session_id: &str) -> Result<RemoteSessionSummary, CcrClientError>;
+    async fn archive(&self, session_id: &str) -> Result<ArchiveResult, CcrClientError>;
+    async fn patch_title(&self, session_id: &str, title: &str) -> Result<(), CcrClientError>;
 }
 
 #[async_trait]

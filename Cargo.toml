@@ -24,12 +24,13 @@ ccode-ports       = { path = "crates/ports" }
 ccode-application = { path = "crates/application" }
 ccode-config      = { path = "crates/config" }
 ccode-provider    = { path = "crates/provider" }
+ccode-remote-runtime = { path = "crates/remote-runtime" }
 
 # common external deps
 serde              = { version = "1", features = ["derive"] }
 thiserror          = "2"
 async-trait        = "0.1"
-tokio              = { version = "1", features = ["rt", "macros"] }
+tokio              = { version = "1", features = ["rt", "macros", "sync", "time"] }
 serde_json         = "1"
 axum               = "0.7"
 tower              = { version = "0.4", features = ["util"] }

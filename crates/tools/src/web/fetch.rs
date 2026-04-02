@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use ccode_platform::security::{DefaultSecretScanner, PolicyError, ScanThenWritePolicy};
 use ccode_ports::{
     tool::{ToolContext, ToolPort},
     PortError,
@@ -54,6 +55,7 @@ impl ToolPort for WebFetchTool {
             .as_str()
             .ok_or_else(|| PortError::Tool("missing url".into()))?;
         let method = args["method"].as_str().unwrap_or("GET").to_uppercase();
+        let policy = ScanThenWritePolicy::new(DefaultSecretScanner::default());
 
         let mut req = match method.as_str() {
             "GET" => self.client.get(url),
@@ -64,6 +66,9 @@ impl ToolPort for WebFetchTool {
         };
 
         if let Some(body) = args["body"].as_str() {
+            if matches!(method.as_str(), "POST" | "PUT" | "DELETE") {
+                policy.scan_remote_payload(body).map_err(map_policy_error)?;
+            }
             req = req.body(body.to_string());
         }
 
@@ -86,5 +91,19 @@ impl ToolPort for WebFetchTool {
 
         let result = json!({ "status": status, "body": truncated_body });
         Ok(result.to_string())
+    }
+}
+
+fn map_policy_error(err: PolicyError) -> PortError {
+    match err {
+        PolicyError::Path(path_err) => PortError::PermissionDenied(path_err.to_string()),
+        PolicyError::SecretDetected { findings } => {
+            let summary = findings
+                .iter()
+                .map(|f| format!("{}:{}", f.rule_id, f.label))
+                .collect::<Vec<_>>()
+                .join(", ");
+            PortError::Tool(format!("secret detected ({summary})"))
+        }
     }
 }

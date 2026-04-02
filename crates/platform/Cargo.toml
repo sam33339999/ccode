@@ -10,6 +10,8 @@ ccode-cron = { path = "../cron" }
 ccode-state-store = { path = "../state-store" }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+regex = "1"
 
 [dev-dependencies]
 tokio = { workspace = true }

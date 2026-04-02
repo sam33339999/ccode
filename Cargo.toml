@@ -25,6 +25,7 @@ ccode-application = { path = "crates/application" }
 ccode-config      = { path = "crates/config" }
 ccode-provider    = { path = "crates/provider" }
 ccode-remote-runtime = { path = "crates/remote-runtime" }
+ccode-platform    = { path = "crates/platform" }
 
 # common external deps
 serde              = { version = "1", features = ["derive"] }

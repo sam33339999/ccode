@@ -1,0 +1,15 @@
+{
+  "id": "f50d7236-36dc-42a1-8df9-a1d045143547",
+  "status": "interrupted",
+  "startedAt": "2026-04-02T06:22:15.724Z",
+  "updatedAt": "2026-04-02T07:27:17.946Z",
+  "agentPlugin": "claude",
+  "trackerPlugin": "json",
+  "prdPath": "tasks/prd.json",
+  "currentIteration": 3,
+  "maxIterations": 0,
+  "totalTasks": 0,
+  "tasksCompleted": 3,
+  "cwd": "/Users/yaxin/Projects/rust_projects/ccode",
+  "endedAt": "2026-04-02T07:27:17.946Z"
+}

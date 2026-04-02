@@ -1,8 +1,29 @@
 {
   "name": "CCode Rust Agent",
-  "branchName": "ralph/ccode-full-spec",
   "description": "Wire existing 10 Rust crates into a fully-featured AI coding agent CLI per all 15 spec docs, from core UX polish through MCP, KAIROS, Bridge, ULTRAPLAN, TEAMMEM, and Multi-Agent orchestration.",
+  "branchName": "ralph/ccode-full-spec",
   "userStories": [
+    {
+      "id": "US-000",
+      "title": "Workspace structure validation and dependency direction enforcement",
+      "description": "As a developer, I want the Cargo workspace structure and crate dependency directions validated so that architectural invariants hold from day one.",
+      "acceptanceCriteria": [
+        "Workspace contains all 13 crates listed in README.md §2 (domain, ports, config, provider, tools, mcp-runtime, remote-runtime, platform, application, session, cron, cli, state-store)",
+        "Each new crate (mcp-runtime, remote-runtime, platform) added as workspace member in root Cargo.toml",
+        "Dependency direction enforced: domain has zero internal deps; ports depends only on domain; application depends on ports+domain; cli depends on application+bootstrap only",
+        "Forbidden edges verified: domain must NOT depend on ports/provider/tools/cli; ports must NOT depend on provider/tools/cli",
+        "CI script or test validates dependency direction via `cargo metadata` DAG check",
+        "README.md §4 dependency rules encoded as automated check",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 0,
+      "passes": true,
+      "notes": "Per README.md §2 and §4. Create a workspace_lint test or script that parses `cargo metadata --format-version 1` and asserts no forbidden edges exist.",
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
     {
       "id": "US-001",
       "title": "REPL multi-turn conversation mode",
@@ -18,9 +39,12 @@
         "cargo test --workspace passes"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "Implement in crates/cli/src/cmd/repl.rs. Use bootstrap::wire_from_config_with_cwd() to get AppState, then loop stdin → AgentRunCommand::run() with same session_id.",
-      "dependsOn": []
+      "dependsOn": [
+        "US-000"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-002",
@@ -37,9 +61,12 @@
         "cargo test --workspace passes"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "Touch crates/cli/src/cmd/agent.rs streaming delta handler. Consider a small render helper for markdown formatting.",
-      "dependsOn": []
+      "dependsOn": [
+        "US-000"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-003",
@@ -55,9 +82,12 @@
         "cargo test --workspace passes"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "Existing agent.rs has basic confirmation. Enhance the prompt formatting and add 'a' (always) option with a HashSet<String> tracker.",
-      "dependsOn": []
+      "dependsOn": [
+        "US-000"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-004",
@@ -73,9 +103,12 @@
         "cargo test --workspace passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Implement in crates/cli/src/cmd/sessions.rs. Use SessionRepository trait from ports.",
-      "dependsOn": ["US-001"]
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-005",
@@ -91,9 +124,12 @@
         "cargo test --workspace passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Implement in crates/cli/src/cmd/cron.rs. Use CronRepository from ports and FileCronRepo from cron crate.",
-      "dependsOn": ["US-001"]
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-006",
@@ -105,74 +141,117 @@
         "Auth errors suggest checking API key configuration",
         "Missing config suggests config.example.toml location",
         "Unexpected errors include correlation context (session id, provider name)",
+        "Unified error envelope with categories: policy / auth / transport / state / validation per integration-contracts.md",
+        "Each error carries a correlation ID for traceability",
+        "Remote endpoint errors do not leak internal details",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": "Add a display_error() helper in cli crate that pattern-matches on AppError/WireError/ConfigError variants and prints user-friendly output.",
-      "dependsOn": ["US-001", "US-002", "US-003", "US-004", "US-005"]
+      "passes": true,
+      "notes": "Add a display_error() helper in cli crate that pattern-matches on AppError/WireError/ConfigError variants and prints user-friendly output. Error envelope from integration-contracts.md.",
+      "dependsOn": [
+        "US-001",
+        "US-002",
+        "US-003",
+        "US-004",
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-007",
       "title": "Canonical LLM types in domain crate",
       "description": "As a developer, I want canonical LLM types (ContentBlock, LlmRequest, LlmResponse, StreamEvent) defined in domain so that all crates share one source of truth.",
       "acceptanceCriteria": [
-        "ContentBlock enum with variants: Text, ToolUse, ToolResult (per llm-compat-contract.md)",
-        "LlmRequest / LlmResponse defined in domain, replacing CompletionRequest/Response in ports",
-        "StopReason enum: EndTurn, MaxTokens, ToolUse, StopSequence",
-        "StreamEvent enum: ContentDelta, ToolCallDelta, MessageComplete",
-        "TokenUsage struct: input_tokens, output_tokens",
+        "ContentBlock enum with variants: Text { text }, ToolUse { id, name, input }, ToolResult { tool_use_id, content, is_error }, Thinking { thinking }",
+        "LlmRequest struct with: model, messages (Vec<Message>), tools (Vec<ToolDefinition>), max_tokens, system prompt, stop_sequences, temperature",
+        "LlmResponse struct with: content (Vec<ContentBlock>), stop_reason (StopReason), usage (TokenUsage), model",
+        "StopReason enum: EndTurn, ToolUse, MaxTokens, StopSequence",
+        "StreamEvent enum: ContentDelta { index, text }, ToolCallDelta { index, id, name, input_json }, MessageStart, MessageComplete { stop_reason, usage }",
+        "TokenUsage struct: input_tokens (u32), output_tokens (u32)",
+        "ToolDefinition struct with: name, description, input_schema (serde_json::Value)",
+        "Role enum: User, Assistant, System",
+        "Message struct with: role (Role), content (Vec<ContentBlock>)",
         "All types derive Serialize, Deserialize, Debug, Clone",
+        "Constants classified per llm-compat-contract.md §8: api-types (enum variants, tag names), config (model alias table, env var names), core-domain (role/stop invariants)",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "Add new module crates/domain/src/llm.rs. These are the Canonical types from llm-compat-contract.md Section 2.",
-      "dependsOn": ["US-006"]
+      "passes": true,
+      "notes": "Add new module crates/domain/src/llm.rs. These are the Canonical types from llm-compat-contract.md Section 2. Include Thinking variant for extended thinking support.",
+      "dependsOn": [
+        "US-006"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-008",
-      "title": "LlmClient trait replacing ProviderPort",
-      "description": "As a developer, I want a single LlmClient trait replacing the current ProviderPort so that the interface matches llm-compat-contract.md.",
+      "title": "LlmClient trait and LlmError taxonomy",
+      "description": "As a developer, I want a single LlmClient trait with comprehensive error types replacing the current ProviderPort so that the interface matches llm-compat-contract.md.",
       "acceptanceCriteria": [
         "LlmClient trait with: complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError>",
-        "LlmClient trait with: stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError>",
-        "LlmError enum: Auth, RateLimit, Timeout, Network, InvalidRequest, ProviderError",
+        "LlmClient trait with: stream(&self, req: LlmRequest) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>, LlmError>",
+        "LlmError enum variant: AuthError(String) — authentication failed",
+        "LlmError enum variant: RateLimited { retry_after_ms: Option<u64> } — rate limited by provider",
+        "LlmError enum variant: ModelNotAvailable(String) — model not found or unavailable",
+        "LlmError enum variant: RequestTooLarge(String) — request exceeds size limits",
+        "LlmError enum variant: InvalidResponse(String) — provider returned invalid response body",
+        "LlmError enum variant: StreamInterrupted(String) — streaming was interrupted",
+        "LlmError enum variant: Network(String) — network/connectivity error",
+        "LlmError enum variant: Timeout(Duration) — operation timed out",
+        "LlmError enum variant: ProviderError { status: u16, message: String } — generic provider error with HTTP status",
         "LlmClient defined in ports crate, replaces ProviderPort",
         "All downstream consumers (application, tools, bootstrap) updated to use LlmClient",
+        "app-services never sees raw HTTP status codes or provider error formats (policy rule)",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "Rename/refactor ProviderPort → LlmClient in crates/ports/src/provider.rs. Update all references across application, tools, bootstrap, cli.",
-      "dependsOn": ["US-007"]
+      "passes": true,
+      "notes": "Rename/refactor ProviderPort → LlmClient in crates/ports/src/provider.rs. Full error taxonomy from llm-compat-contract.md §4. Stream return type uses Pin<Box<dyn Stream>>.",
+      "dependsOn": [
+        "US-007"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-009",
       "title": "Provider adapter triple conversion",
       "description": "As a developer, I want provider adapters to convert between Canonical and wire formats so that no provider-specific types leak above the provider crate.",
       "acceptanceCriteria": [
-        "AnthropicAdapter converts Canonical → Anthropic request and Anthropic → Canonical response",
-        "OpenAiCompatAdapter converts Canonical → OpenAI request and OpenAI → Canonical response",
-        "Tool definition bidirectional conversion (Canonical schema ↔ provider schema)",
-        "Streaming events convert from provider SSE to Canonical StreamEvent",
+        "AnthropicAdapter converts Canonical LlmRequest → Anthropic Messages API request format",
+        "AnthropicAdapter converts Anthropic Messages API response → Canonical LlmResponse",
+        "OpenAiCompatAdapter converts Canonical LlmRequest → OpenAI Chat Completions request format",
+        "OpenAiCompatAdapter converts OpenAI Chat Completions response → Canonical LlmResponse",
+        "ToolDefinition bidirectional conversion: Canonical schema ↔ Anthropic tool schema",
+        "ToolDefinition bidirectional conversion: Canonical schema ↔ OpenAI function schema",
+        "StopReason::ToolUse maps correctly to/from both provider representations",
+        "Streaming: Anthropic SSE events convert to Canonical StreamEvent sequence with ordering preserved",
+        "Streaming: OpenAI SSE events convert to Canonical StreamEvent sequence with ordering preserved",
+        "HTTP error mapping inside adapters: 401/403 → LlmError::AuthError",
+        "HTTP error mapping inside adapters: 429 → LlmError::RateLimited with retry-after extraction",
+        "HTTP error mapping inside adapters: 413/400 (too large) → LlmError::RequestTooLarge",
+        "HTTP error mapping inside adapters: network timeout → LlmError::Timeout",
+        "HTTP error mapping inside adapters: malformed response body → LlmError::InvalidResponse",
         "All adapters implement the new LlmClient trait",
         "Router implements LlmClient (failover/round-robin logic preserved)",
-        "Upper crates (application, tools) only use Canonical types",
+        "Upper crates (application, tools) only use Canonical types — no provider wire types leak above provider crate",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "Refactor crates/provider/src/compat/, openai_compat/, anthropic_compat/ to use Canonical types from domain. Update router.rs.",
-      "dependsOn": ["US-008"]
+      "passes": true,
+      "notes": "Refactor crates/provider/src/compat/, openai_compat/, anthropic_compat/ to use Canonical types from domain. Provider wire format field names, SSE event type strings, HTTP header constants are runtime-local constants owned by provider crate only.",
+      "dependsOn": [
+        "US-008"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-010",
@@ -182,6 +261,7 @@
         "New crates/mcp-runtime added as workspace member",
         "Stdio transport implemented (spawn child process, stdin/stdout JSON-RPC)",
         "McpTransport trait with: send(), receive(), close()",
+        "TransportError type for connection/protocol failures",
         "Connection failure returns clear error classification",
         "Unit tests for message serialization/deserialization",
         "cargo fmt --check passes",
@@ -189,9 +269,12 @@
         "cargo test --workspace passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "Create crates/mcp-runtime/. Implement stdio transport first per chicago-mcp-contract.md. SSE transport can come later.",
-      "dependsOn": ["US-009"]
+      "dependsOn": [
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-011",
@@ -208,47 +291,68 @@
         "cargo test --workspace passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Add MCP config section to crates/config. Wire discovery in bootstrap. Create McpToolAdapter implementing ToolPort.",
-      "dependsOn": ["US-010"]
+      "dependsOn": [
+        "US-010"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-012",
-      "title": "MCP reserved name and capability policy",
-      "description": "As a developer, I want reserved MCP server names and capability checks enforced per chicago-mcp-contract.md.",
+      "title": "MCP reserved name, capability policy, and lifecycle hooks",
+      "description": "As a developer, I want reserved MCP server names, capability checks, and lifecycle hooks enforced per chicago-mcp-contract.md.",
       "acceptanceCriteria": [
-        "Reserved server names (e.g. 'computer') rejected with policy error",
-        "Privileged adapter (computer-use) requires feature gate to enable",
-        "Tool turn-end cleanup: temporary resources cleaned after each agent turn",
+        "McpCapabilityPolicy trait with: validate_server_name(&self, name) -> Result<(), McpPolicyError> and capability_level(&self, server) -> CapabilityLevel",
+        "CapabilityLevel enum: Standard, PrivilegedComputerUse",
+        "Reserved server names (e.g. 'computer') rejected with ReservedServerName error",
+        "Privileged computer-use adapter requires feature gate + policy pass to enable",
+        "ComputerUseLifecycle trait with: before_tool_call(), after_turn_cleanup(), on_interrupt_cleanup()",
+        "Cleanup must run in both normal and interrupt exit paths",
+        "Cleanup failures are observable (logged) but do not crash the main turn path",
         "Capability negotiation: only enable capabilities the server declares support for",
+        "McpPolicyError variants: ReservedServerName, FeatureGateDisabled, PrivilegedCapabilityDenied, TransportError, InvalidToolPayload, CleanupFailed",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": "Add reserved name list and policy check in mcp-runtime. Wire cleanup hook into agent loop in application crate.",
-      "dependsOn": ["US-011"]
+      "passes": true,
+      "notes": "Add reserved name list and policy check in mcp-runtime. Wire cleanup hook into agent loop in application crate. ComputerUseLifecycle per chicago-mcp-contract.md.",
+      "dependsOn": [
+        "US-011"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-013",
       "title": "KAIROS AssistantModeService implementation",
       "description": "As a developer, I want KAIROS mode resolution and prompt composition so that the agent can operate in different assistant modes.",
       "acceptanceCriteria": [
-        "AssistantModeService trait implemented in application crate",
-        "resolve_mode(): determines effective mode from config + session state",
-        "build_prompt(): composes system prompt by precedence order",
-        "route_input(): slash command routing (e.g. /brief switches mode)",
-        "Mode switch emits a DomainEvent",
+        "AssistantModeService trait with: resolve_mode(ctx: AssistantModeContext) -> AssistantModeDecision",
+        "AssistantModeService trait with: build_prompt(ctx: PromptComposeContext) -> PromptComposeResult",
+        "AssistantModeService trait with: route_input(ctx: RouteInputContext) -> RouteDecision",
+        "resolve_mode(): determines effective mode from config + session state; result is deterministic",
+        "build_prompt(): composes system prompt by deterministic precedence order",
+        "route_input(): slash command routing (e.g. /brief switches mode); precedence is deterministic",
+        "Mode switch emits a DomainEvent with stable metadata",
+        "Tool visibility is a pure function of mode + capability policy (no side effects)",
+        "Telemetry tag emission uses schema-only fields (no payload leakage)",
+        "KairosError variants: DisabledByPolicy, InvalidModeState, PromptComposeFailed(String), RouteConflict",
         "Unit tests for mode resolution logic",
+        "Unit tests for prompt precedence ordering",
+        "Unit tests for route conflict handling",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Per kairos-contract.md. Add mode types to domain, service to application. Prompt precedence must be deterministic and testable.",
-      "dependsOn": ["US-009"]
+      "dependsOn": [
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-014",
@@ -256,77 +360,105 @@
       "description": "As a user, I want tool visibility to change based on the current assistant mode so that irrelevant tools are hidden.",
       "acceptanceCriteria": [
         "Each mode defines a tool allowlist",
-        "ToolRegistry supports filtered view by mode",
+        "ToolRegistry supports filtered view by mode via definitions_for_mode(mode) method",
         "Brief mode hides high-risk tools",
+        "Tool allowlist output is deterministic and testable",
         "Mode switch takes effect immediately without restart",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Add definitions_for_mode(mode) method to ToolRegistry. Wire into agent loop's tool list construction.",
-      "dependsOn": ["US-013"]
+      "dependsOn": [
+        "US-013"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-015",
       "title": "ModeCoordinatorService implementation",
       "description": "As a developer, I want mode coordination logic per coordinator-mode-contract.md so that env mode and session mode are reconciled deterministically.",
       "acceptanceCriteria": [
-        "ModeCoordinatorService trait implemented",
-        "resolve_effective_mode(): session mode takes precedence over env mode",
-        "reconcile_on_resume(): handles mode conflict when resuming a session",
-        "Mode switch event carries metadata (from, to, reason)",
+        "ModeCoordinatorService trait with: resolve_effective_mode(input: ModeResolutionInput) -> EffectiveMode",
+        "ModeCoordinatorService trait with: reconcile_on_resume(session_mode: Option<SessionMode>) -> ModeReconcileResult",
+        "Explicit precedence rule: session mode takes precedence over env mode (CLAUDE_CODE_COORDINATOR_MODE)",
+        "reconcile_on_resume(): handles mode conflict when resuming a session deterministically",
+        "Mode switch event carries stable metadata (from, to, reason)",
+        "CoordinatorModeError variants: DisabledByPolicy, InvalidModeTransition, SessionModeMismatch",
         "Invalid transitions return InvalidModeTransition error",
-        "Unit tests for precedence and reconciliation logic",
+        "Unit tests for precedence logic",
+        "Unit tests for reconciliation on resume",
+        "Unit tests for each error variant",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Per coordinator-mode-contract.md. Implement in application crate. Env var: CLAUDE_CODE_COORDINATOR_MODE.",
-      "dependsOn": ["US-013"]
+      "dependsOn": [
+        "US-013"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-016",
       "title": "TriggerSchedulerService local scheduling",
       "description": "As a user, I want to schedule durable agent tasks that survive process restart so that I can automate recurring workflows.",
       "acceptanceCriteria": [
-        "TriggerSchedulerService trait: create, list, delete",
+        "TriggerSchedulerService trait with: create(task: TriggerTask) -> Result<TriggerTask, TriggerError>",
+        "TriggerSchedulerService trait with: list() -> Result<Vec<TriggerTask>, TriggerError>",
+        "TriggerSchedulerService trait with: delete(id, actor: TriggerOwner) -> Result<(), TriggerError>",
         "TriggerTask supports SessionOnly and Durable scope",
-        "Durable tasks persist to state-store",
-        "Owner model: MainAgent / Teammate / TeamLead",
+        "Durable tasks persist to state-store and reload on restart",
+        "SessionOnly tasks survive runtime tick but not process restart",
+        "TriggerOwner model: MainAgent, Teammate(String), TeamLead",
+        "Durable tasks require explicit user intent",
         "Teammate cannot create Durable tasks (returns DurableNotAllowedForTeammate)",
-        "Delete checks owner identity before removing",
-        "Unit tests for ownership and scope rules",
+        "Delete checks owner identity before removing (returns OwnershipViolation on mismatch)",
+        "TriggerError variants: GateDisabled, InvalidCron, OwnershipViolation, DurableNotAllowedForTeammate, Unauthorized, UpstreamRemoteError, StorageError",
+        "Unit tests for ownership rules",
+        "Unit tests for scope rules (SessionOnly vs Durable)",
+        "Unit tests for each error variant",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Per agent-triggers-contract.md. Add trigger types to domain, service to application, storage to session/cron crate.",
-      "dependsOn": ["US-009"]
+      "dependsOn": [
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-017",
       "title": "RemoteTriggerDispatchService",
       "description": "As a developer, I want remote trigger dispatch so that scheduled tasks can execute on remote infrastructure.",
       "acceptanceCriteria": [
-        "RemoteTriggerDispatchService trait: dispatch(payload) -> String",
+        "RemoteTriggerDispatchService trait with: dispatch(payload: serde_json::Value) -> Result<String, TriggerError>",
         "Feature gate controls availability (gate off returns GateDisabled)",
-        "Requires auth/org context validation",
-        "Transport errors do not leak internal details",
+        "Requires auth/org context validation (missing auth returns Unauthorized)",
+        "Transport errors mapped to UpstreamRemoteError (do not leak internal details)",
         "Local scheduling works independently when remote is disabled",
+        "Unit tests for gate-off path",
+        "Unit tests for auth validation",
+        "Unit tests for error non-leakage",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "Per agent-triggers-contract.md. Depends on remote-runtime crate existing. Wire feature gate in config.",
-      "dependsOn": ["US-016", "US-019"]
+      "dependsOn": [
+        "US-016",
+        "US-019"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-018",
@@ -334,59 +466,97 @@
       "description": "As a developer, I want bridge mode remote session management per bridge-mode-contract.md.",
       "acceptanceCriteria": [
         "New crates/remote-runtime added as workspace member",
-        "RemoteSessionService trait: create, fetch, archive, update_title, reconcile_resume",
-        "RemoteSessionState state machine: Pending -> Running -> Idle -> Archived/Expired/Failed",
-        "Forbidden transitions enforced: Archived -> Running, Expired -> Running",
-        "Archive is idempotent (409 treated as success)",
-        "Unit tests for state transitions",
+        "RemoteSessionService trait with: create_session(req) -> Result<RemoteSessionSummary, RemoteSessionError>",
+        "RemoteSessionService trait with: fetch_session(session_id) -> Result<RemoteSessionSummary, RemoteSessionError>",
+        "RemoteSessionService trait with: archive_session(session_id, policy) -> Result<(), RemoteSessionError>",
+        "RemoteSessionService trait with: update_title(session_id, title) -> Result<(), RemoteSessionError>",
+        "RemoteSessionService trait with: reconcile_resume(session_id) -> Result<RemoteSessionSummary, RemoteSessionError>",
+        "RemoteSessionState state machine with 7 states: Pending, Running, Idle, RequiresAction, Archived, Expired, Failed",
+        "Allowed transitions: Pending→Running|Idle|RequiresAction|Failed; Running→Idle|RequiresAction|Archived|Failed|Expired; Idle→Running|Archived|Expired; RequiresAction→Running|Archived|Expired",
+        "Terminal states: Archived, Expired, Failed (no outgoing transitions)",
+        "Forbidden transitions enforced: Archived→Running, Expired→Running",
+        "Archive is idempotent (409 treated as success-equivalent)",
+        "RemoteSessionError variants: DisabledByPolicy, EntitlementDenied, InvalidStateTransition, NotFound, Expired, AuthUnavailable, Upstream(String)",
+        "Missing token/org context is a policy error in app-services; runtime returns typed transport/auth errors only",
+        "Shutdown path can degrade to best-effort archive under timeout budget",
+        "Runtime errors translated in app-services into stable RemoteSessionError",
+        "Unit tests for all state transitions (allowed + forbidden)",
+        "Unit tests for 409 idempotent archive",
+        "Unit tests for each error variant",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 10,
-      "passes": false,
-      "notes": "Per bridge-mode-contract.md. Create crates/remote-runtime/. State types go in domain, service trait in application or ports.",
-      "dependsOn": ["US-009"]
+      "passes": true,
+      "notes": "Per bridge-mode-contract.md. Create crates/remote-runtime/. State types go in domain, service trait in ports, impl in application.",
+      "dependsOn": [
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-019",
       "title": "CcrClient HTTP transport layer",
       "description": "As a developer, I want an HTTP client for remote session API communication.",
       "acceptanceCriteria": [
-        "CcrClient trait: HTTP transport for remote session lifecycle",
-        "Session ID prefix translation (session_ vs cse_) handled only in remote-runtime",
+        "CcrClient trait with: create(req) -> Result<RemoteSessionSummary, CcrClientError>",
+        "CcrClient trait with: get(session_id) -> Result<RemoteSessionSummary, CcrClientError>",
+        "CcrClient trait with: archive(session_id) -> Result<ArchiveResult, CcrClientError>",
+        "CcrClient trait with: patch_title(session_id, title) -> Result<(), CcrClientError>",
+        "Session ID prefix translation (session_ vs cse_) handled only in remote-runtime — app-services never manipulates tag prefixes directly",
         "Auth token and org context auto-attached to requests",
         "Timeout and retry configurable via config",
-        "CcrClientError and RemoteSessionError as separate error layers",
+        "CcrClientError variants: Http(String), Timeout, Unauthorized, Forbidden, InvalidPayload",
+        "CcrClientError and RemoteSessionError are separate error layers with translation in app-services",
+        "Prefix translation (session_ vs cse_) round-trips correctly through compatibility adapter",
+        "Unit tests for prefix translation round-trip",
+        "Unit tests for each CcrClientError variant",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 11,
-      "passes": false,
-      "notes": "Per bridge-mode-contract.md. Implement in crates/remote-runtime/src/client.rs. Use reqwest.",
-      "dependsOn": ["US-018"]
+      "passes": true,
+      "notes": "Per bridge-mode-contract.md. Implement in crates/remote-runtime/src/client.rs. Use reqwest. Prefix translation is transport compatibility logic, not domain logic.",
+      "dependsOn": [
+        "US-018"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-020",
       "title": "UltraplanService state machine",
       "description": "As a user, I want to launch long-running planning sessions on remote infrastructure with lifecycle management.",
       "acceptanceCriteria": [
-        "UltraplanService trait: launch, poll, stop, archive_orphan",
-        "8-state machine: Idle -> Launching -> Polling -> AwaitingInput -> Approved -> Completed/Failed",
+        "UltraplanService trait with: launch(prompt, policy) -> Result<UltraplanSession, UltraplanError>",
+        "UltraplanService trait with: poll(session_id) -> Result<UltraplanPhase, UltraplanError>",
+        "UltraplanService trait with: stop(session_id) -> Result<(), UltraplanError>",
+        "UltraplanService trait with: archive_orphan(session_id) -> Result<(), UltraplanError>",
+        "8-state machine (UltraplanPhase): Idle, Launching, Polling, AwaitingInput, Approved, Stopping, Completed, Failed",
+        "Transitions: Idle→Launching; Launching→Polling|Failed; Polling→AwaitingInput|Approved|Failed|Stopping; AwaitingInput→Polling|Stopping; Approved→Completed; Stopping→Completed|Failed",
+        "Terminal states: Completed, Failed",
         "At most one active ULTRAPLAN per session context",
         "Launch while already Launching/Polling returns AlreadyActive",
+        "Keyword auto-route must respect launch/polling guards",
         "Failure after remote session creation auto-attempts orphan archive",
         "Stop clears local active marker before returning",
-        "Unit tests for state transitions and guard conditions",
+        "UltraplanError variants: DisabledByPolicy, AlreadyActive, LaunchFailed, PollTimeout, ApprovalFailed, ArchiveFailed, Transport(String)",
+        "Unit tests for all state transitions",
+        "Unit tests for guard conditions (AlreadyActive, concurrent launch)",
+        "Unit tests for orphan archive on failure path",
+        "Unit tests for each error variant",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "Per ultraplan-contract.md. Implement in application crate, using remote-runtime for transport.",
-      "dependsOn": ["US-019"]
+      "dependsOn": [
+        "US-019"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-021",
@@ -397,59 +567,93 @@
         "validate_canonical_path(): rejects '..', symlink escape, paths outside root",
         "SecretScanner: scans file content for secret patterns",
         "Scan results include rule_id and label for auditing",
-        "Unit tests for path traversal and symlink attack scenarios",
+        "All local writes pass canonical path validation first (policy rule)",
+        "All remote writes pass secret scan first (policy rule)",
+        "Invariant ordering enforced: validate → scan → write/push",
+        "Unit tests for path traversal attack scenarios",
+        "Unit tests for symlink escape scenarios",
+        "Unit tests for secret pattern detection",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 12,
-      "passes": false,
-      "notes": "Per teammem-contract.md. This is a prerequisite for TEAMMEM sync. Keep it focused: path validation + secret scan only.",
-      "dependsOn": ["US-009"]
+      "passes": true,
+      "notes": "Per teammem-contract.md. This is a prerequisite for TEAMMEM sync. Invariant ordering: validate → scan → write/push is critical.",
+      "dependsOn": [
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-022",
       "title": "TeamMemorySyncService implementation",
       "description": "As a user, I want to sync team memory with remote storage with security guarantees.",
       "acceptanceCriteria": [
-        "TeamMemorySyncService trait: pull, push, sync",
-        "Pull -> merge -> push with ETag / 412 conflict retry (bounded)",
+        "TeamMemorySyncService trait with: pull() -> Result<SyncResult, TeamMemError>",
+        "TeamMemorySyncService trait with: push() -> Result<SyncResult, TeamMemError>",
+        "TeamMemorySyncService trait with: sync() -> Result<SyncResult, TeamMemError>",
+        "Pull → merge → push with ETag / 412 conflict retry (bounded at configured max_retries)",
         "All remote writes pass secret scan first",
         "All local writes pass canonical path validation first",
         "Path traversal / symlink escape returns PathValidationFailed",
-        "Secret detected skips file with audit metadata",
-        "File over max-size skipped with classification",
+        "Secret detected skips file with audit metadata (never returns raw secret content)",
+        "File over max-size skipped with explicit classification",
+        "Entry count over max-entry has deterministic truncation/skip policy",
         "Retry exhausted returns ConflictExhausted",
-        "Unit tests for security invariants",
+        "TeamMemError variants: AuthUnavailable, Unauthorized, ConflictExhausted, PathValidationFailed, SecretDetected, FileTooLarge, EntryLimitExceeded, StorageWriteError, UpstreamTimeout",
+        "Unit tests for security invariants (path validation, secret scan)",
+        "Unit tests for conflict retry exhaustion",
+        "Unit tests for oversized file handling",
+        "Unit tests for each error variant",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 13,
-      "passes": false,
-      "notes": "Per teammem-contract.md. Invariant ordering: validate -> scan -> write/push. Implement in application crate, using platform + remote-runtime.",
-      "dependsOn": ["US-021", "US-019"]
+      "passes": true,
+      "notes": "Per teammem-contract.md. Invariant ordering: validate → scan → write/push. Implement in application crate, using platform + remote-runtime.",
+      "dependsOn": [
+        "US-021",
+        "US-019"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-023",
       "title": "MultiAgentOrchestrator implementation",
       "description": "As a developer, I want parallel agent orchestration per multi-agent-orchestration-contract.md.",
       "acceptanceCriteria": [
-        "MultiAgentOrchestrator trait: spawn_parallel, handle_notification, synthesize_summary, stop_task",
-        "WorkerTaskSpec includes criticality (Blocking / Sidecar)",
-        "Parallel fan-out rejects overlapping write scopes",
+        "MultiAgentOrchestrator trait with: spawn_parallel(tasks: Vec<WorkerTaskSpec>) -> Result<Vec<String>, OrchestrationError>",
+        "MultiAgentOrchestrator trait with: handle_notification(notification: WorkerResultNotification) -> Result<(), OrchestrationError>",
+        "MultiAgentOrchestrator trait with: synthesize_summary(task_ids: &[String]) -> Result<CoordinatorSummary, OrchestrationError>",
+        "MultiAgentOrchestrator trait with: stop_task(task_id: &str) -> Result<(), OrchestrationError>",
+        "WorkerTaskSpec includes criticality: Blocking (blocks main progress) / Sidecar (background, non-blocking)",
+        "WorkerStatus enum: Running, Completed, Failed, Cancelled",
+        "Parallel fan-out rejects overlapping write scopes (PolicyViolation)",
+        "Independent tasks must be launched in parallel when no shared write scope exists",
+        "Blocking critical-path work should not be delegated if local progress depends on it immediately",
         "Worker prompts are self-contained with ownership boundaries",
-        "Coordinator produces synthesized summary (no raw pass-through)",
+        "Coordinator produces synthesized summary from notifications (no raw pass-through)",
+        "Notification parsing enforces structured payload fields (task_id, status, summary)",
         "Stop is idempotent — stopping a terminal-state task does not error",
-        "Unit tests for fan-out policy and synthesis",
+        "OrchestrationError variants: DisabledByMode, InvalidTaskSpec, PolicyViolation, NotificationMalformed, TaskNotFound, SpawnFailed(String), SynthesisFailed(String)",
+        "Unit tests for fan-out write-scope conflict policy",
+        "Unit tests for synthesis logic",
+        "Unit tests for idempotent stop",
+        "Unit tests for each error variant",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 14,
-      "passes": false,
+      "passes": true,
       "notes": "Per multi-agent-orchestration-contract.md. Implement in application crate. Uses tokio::spawn for parallel workers.",
-      "dependsOn": ["US-015", "US-009"]
+      "dependsOn": [
+        "US-015",
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-024",
@@ -460,15 +664,19 @@
         "TaskStopTool supports stopping a running worker",
         "Worker results reported as WorkerResultNotification",
         "Notification routing to coordinator's handle_notification",
-        "UI displays worker status (Running / Completed / Failed)",
+        "Non-coordinator mode blocks orchestration calls with explicit policy error (DisabledByMode)",
+        "UI displays worker status (Running / Completed / Failed / Cancelled)",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 14,
-      "passes": false,
+      "passes": true,
       "notes": "Extend existing crates/tools/src/spawn_agent.rs. Add TaskStopTool. Wire notification routing in bootstrap.",
-      "dependsOn": ["US-023"]
+      "dependsOn": [
+        "US-023"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-025",
@@ -476,19 +684,38 @@
       "description": "As a developer, I want cross-feature integration contracts enforced per integration-contracts.md.",
       "acceptanceCriteria": [
         "Bridge x Ultraplan: remote session APIs only through app-services",
-        "MCP x Tool Runtime: privileged adapter controlled by tool runtime hooks",
-        "TeamMem x KAIROS: memory prompts do not bypass secret/path safety",
-        "Triggers x Remote: local scheduling works when remote is disabled",
-        "Coordinator x Multi-Agent: deterministic fan-out policy",
+        "Bridge x Ultraplan: launch failure after session creation always issues archive attempt",
+        "Bridge x Ultraplan: archived session cannot re-enter running state",
+        "Bridge x Ultraplan: concurrent operations do not corrupt active session pointer state",
+        "MCP x Tool Runtime: cleanup hooks run on normal completion and interruption",
+        "MCP x Tool Runtime: privileged capability cannot be activated via generic MCP registration",
+        "MCP x Tool Runtime: policy failure prevents side effects",
+        "TeamMem x KAIROS: secret-detected content is never emitted in prompt payload",
+        "TeamMem x KAIROS: invalid path keys are blocked and logged safely",
+        "TeamMem x KAIROS: sync conflict retries remain bounded and observable",
+        "Triggers x Remote: remote gate-off path keeps local tasks intact",
+        "Triggers x Remote: durable/session-only semantics survive restart",
+        "Triggers x Remote: ownership violations return deterministic policy errors",
+        "Coordinator x Multi-Agent: parallel fan-out occurs only when write-scope conflicts absent",
+        "Coordinator x Multi-Agent: mixed worker outcomes produce deterministic aggregate status",
+        "Coordinator x Multi-Agent: final summary contains findings and actionable next steps with task traceability",
         "Unified error envelope: policy / auth / transport / state / validation categories with correlation ID",
         "cargo fmt --check passes",
         "cargo clippy --workspace -- -D warnings passes",
         "cargo test --workspace passes"
       ],
       "priority": 15,
-      "passes": false,
-      "notes": "Per integration-contracts.md. This is a verification/wiring story — add integration tests that assert boundary rules.",
-      "dependsOn": ["US-012", "US-014", "US-017", "US-020", "US-022", "US-024"]
+      "passes": true,
+      "notes": "Per integration-contracts.md. Add integration tests asserting each cross-feature boundary rule. Each of the 5 cross-feature pairs has 3 test cases.",
+      "dependsOn": [
+        "US-012",
+        "US-014",
+        "US-017",
+        "US-020",
+        "US-022",
+        "US-024"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-026",
@@ -505,9 +732,13 @@
         "cargo test --workspace passes"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "Add tracing spans to application, provider, tools, mcp-runtime, remote-runtime. Add correlation ID to AppState or pass via tracing context.",
-      "dependsOn": ["US-012", "US-019"]
+      "dependsOn": [
+        "US-012",
+        "US-019"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-027",
@@ -523,9 +754,12 @@
         "cargo test --workspace passes"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "Per acceptance-spec.md IME requirements. May need unicode-width and unicode-segmentation crates. Test with CJK input in REPL.",
-      "dependsOn": ["US-001"]
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-028",
@@ -542,9 +776,503 @@
         "cargo test --workspace passes"
       ],
       "priority": 16,
-      "passes": false,
+      "passes": true,
       "notes": "Per acceptance-spec.md security requirements. Run cargo audit, verify deny-by-default in sandbox config, check error messages in remote-runtime.",
-      "dependsOn": ["US-025", "US-026", "US-027"]
+      "dependsOn": [
+        "US-025",
+        "US-026",
+        "US-027"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-029",
+      "title": "Integrate ratatui foundation for interactive terminal UI",
+      "description": "As a user, I want an optional full-screen TUI mode powered by ratatui so that I can interact with the agent in a more structured and readable interface.",
+      "acceptanceCriteria": [
+        "Add `ratatui` and `crossterm` dependencies with compatible versions in the CLI crate",
+        "Introduce a new command `ccode tui` that boots an event loop and full-screen terminal mode",
+        "Initial layout includes at least: conversation pane, status pane, and input pane",
+        "Supports graceful exit and terminal restoration on Ctrl-C / panic / normal quit",
+        "TUI mode can coexist with current REPL mode without behavior regression",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Create `crates/cli/src/cmd/tui.rs` and wire command in clap definitions. Add a small `ui` module for draw loop and terminal setup/teardown guards.",
+      "dependsOn": [
+        "US-001",
+        "US-002",
+        "US-006"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-030",
+      "title": "Ratatui streaming renderer for assistant and tool events",
+      "description": "As a user, I want streaming model output and tool execution events rendered incrementally in the TUI so that I can follow progress in real time.",
+      "acceptanceCriteria": [
+        "LLM content deltas append to the active assistant message in the conversation pane",
+        "Tool start/finish events render as structured timeline entries with success/failure markers",
+        "Long output is scrollable with keyboard navigation",
+        "Renderer avoids flicker and excessive redraw under streaming load",
+        "Error states are displayed in a dedicated status area with category labels",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Build a `UiState` model decoupled from draw calls. Reuse existing stream events from `agent.rs` via channel/event adapter into ratatui draw loop.",
+      "dependsOn": [
+        "US-029",
+        "US-007",
+        "US-008",
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-031",
+      "title": "Ratatui input editing and IME-safe text entry",
+      "description": "As a CJK user, I want reliable input editing in TUI mode so that composition, cursor movement, and submission work correctly.",
+      "acceptanceCriteria": [
+        "Input widget supports insertion, deletion, cursor left/right, and history recall",
+        "IME preedit and commit flows are handled without premature submit",
+        "Grapheme-aware cursor movement and backspace work for CJK and emoji",
+        "Enter submits only committed text; Shift-Enter (or configurable key) inserts newline",
+        "Input width and cursor placement respect fullwidth characters",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Extend input handling around `crossterm::event` with composition-safe state. Reuse unicode-width/unicode-segmentation strategy from REPL IME work.",
+      "dependsOn": [
+        "US-027",
+        "US-029"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-032",
+      "title": "Tool approval modal in ratatui",
+      "description": "As a user, I want a clear in-TUI tool approval modal so that I can safely approve or deny tool executions without leaving full-screen mode.",
+      "acceptanceCriteria": [
+        "When a tool requires confirmation, show a modal with tool name, parameter summary, and risk level",
+        "Modal supports allow/deny/always-allow actions matching existing CLI semantics",
+        "Decision persists for session when always-allow is selected",
+        "Deny action resumes agent loop cleanly and logs decision in conversation pane",
+        "Keyboard-only flow is fully supported and discoverable",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Share confirmation policy/state with existing command path to avoid duplicated business logic. TUI layer should only handle rendering + key mapping.",
+      "dependsOn": [
+        "US-003",
+        "US-029",
+        "US-030"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-033",
+      "title": "Ratatui worker/task monitor for multi-agent orchestration",
+      "description": "As a user, I want to see worker task status in a dedicated TUI panel so that multi-agent activity is visible and controllable.",
+      "acceptanceCriteria": [
+        "Worker panel lists active and recent tasks with state badges (Running/Completed/Failed)",
+        "Selecting a task shows compact details: task id, summary, started_at, updated_at",
+        "Supports stop action for running tasks via existing stop tool path",
+        "Coordinator notifications update panel in near real time",
+        "Panel gracefully handles high task volume with pagination or virtual scrolling",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Consume orchestrator notification stream and map into TUI `TaskViewModel`. Keep stop action routed through existing TaskStopTool integration.",
+      "dependsOn": [
+        "US-023",
+        "US-024",
+        "US-029",
+        "US-030"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-034",
+      "title": "Ratatui theming, accessibility, and fallback policy",
+      "description": "As a user, I want the TUI to remain readable and robust across terminals so that usability is consistent in different environments.",
+      "acceptanceCriteria": [
+        "Provide default and high-contrast color themes configurable in settings",
+        "Respect no-color / limited-color terminals with sane fallbacks",
+        "All key actions have visible hints and non-color status indicators",
+        "Terminal capability check falls back to standard REPL when unsupported",
+        "Startup and teardown leave terminal in clean state after crashes (best-effort)",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Add a small capability probe and fallback guard in CLI startup. Keep theme tokens centralized to avoid hardcoded style values across widgets.",
+      "dependsOn": [
+        "US-029",
+        "US-031",
+        "US-032"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-035",
+      "title": "Constants classification governance",
+      "description": "As a developer, I want constants classified and placed in their owning crate per the constants governance policy defined across all contract docs.",
+      "acceptanceCriteria": [
+        "api-types constants (enum variants, protocol field names, state labels) live in domain crate",
+        "config constants (gate keys, timeout defaults, env var names, path defaults, retry caps) live in config crate",
+        "core-domain constants (ownership invariants, state transition rules, validated path policies) live in domain crate",
+        "runtime-local constants (internal key names, lock file internals, backoff profiles, wire format field names, SSE event type strings, HTTP headers) live in their owning runtime crate only",
+        "ui-tui constants (user-facing messages, display labels, help text) live in cli crate",
+        "No constant leaks outside its owning crate boundary",
+        "Automated test or lint validates constant placement rules",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Per constants classification sections in README.md §6 and all contract docs. Constants categories: api-types, config, core-domain, runtime-local, ui-tui.",
+      "dependsOn": [
+        "US-000"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-036",
+      "title": "LLM compat acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for llm-compat-contract.md covering contract, integration, error handling, and agent loop scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: LlmRequest round-trips through Anthropic wire format without data loss",
+        "Contract test: LlmRequest round-trips through OpenAI wire format without data loss",
+        "Contract test: ToolDefinition schema mapping bijective between Canonical and both providers",
+        "Contract test: StopReason::ToolUse maps correctly to/from both provider representations",
+        "Contract test: streaming events maintain ordering and content integrity through conversion",
+        "Integration test: AnthropicAdapter::complete() sends valid Messages API request and parses response",
+        "Integration test: OpenAiAdapter::complete() sends valid Chat Completions request and parses response",
+        "Integration test: AnthropicAdapter::stream() yields correct StreamEvent sequence from SSE",
+        "Integration test: OpenAiAdapter::stream() yields correct StreamEvent sequence from SSE",
+        "Integration test: tool use flow — request with tools → response with tool_use → follow-up with tool_result",
+        "Error test: 401/403 → LlmError::AuthError",
+        "Error test: 429 → LlmError::RateLimited with retry-after extraction",
+        "Error test: 413/400 (too large) → LlmError::RequestTooLarge",
+        "Error test: network timeout → LlmError::Timeout",
+        "Error test: malformed response body → LlmError::InvalidResponse",
+        "Agent loop test: agent loop can alternate between complete() and tool execution using only Canonical types",
+        "Agent loop test: switching provider in config requires zero code changes in app-services",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Per llm-compat-contract.md §10 acceptance criteria. Use mock HTTP servers (wiremock or similar) for integration tests. These are the full 17 acceptance tests from the spec.",
+      "dependsOn": [
+        "US-009"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-037",
+      "title": "Bridge mode acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for bridge-mode-contract.md covering contract, integration, and CLI behavior scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: archive(409) maps to success-equivalent result",
+        "Contract test: session_ and cse_ IDs round-trip correctly through compatibility adapter",
+        "Contract test: missing token/org produces AuthUnavailable or EntitlementDenied (never panic)",
+        "Integration test: create → fetch → archive happy path passes",
+        "Integration test: resume with stale/expired session returns deterministic error classification",
+        "Integration test: shutdown path performs best-effort archive under timeout budget",
+        "CLI behavior test: disabled gate path prints actionable message",
+        "CLI behavior test: successful remote-control path yields session URL and lifecycle updates",
+        "CLI behavior test: archive failure surfaces non-fatal warning, exit remains graceful",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 12,
+      "passes": true,
+      "notes": "Per bridge-mode-contract.md §8 acceptance criteria. 9 test cases total (3 contract + 3 integration + 3 CLI).",
+      "dependsOn": [
+        "US-019"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-038",
+      "title": "Chicago MCP acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for chicago-mcp-contract.md covering contract, integration, and CLI behavior scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: reserved names rejected with ReservedServerName",
+        "Contract test: privileged capability denied without gate/policy",
+        "Contract test: cleanup API called for both normal and interrupt exits",
+        "Integration test: MCP server registration + tool dispatch happy path",
+        "Integration test: interrupt during tool call triggers cleanup once",
+        "Integration test: cleanup exception does not poison subsequent turns",
+        "CLI behavior test: --computer-use-mcp routes to privileged adapter path",
+        "CLI behavior test: error output exposes class, not sensitive native details",
+        "CLI behavior test: disabled gate path gives deterministic reason",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Per chicago-mcp-contract.md §8 acceptance matrix. 9 test cases total (3 contract + 3 integration + 3 CLI).",
+      "dependsOn": [
+        "US-012"
+      ]
+    },
+    {
+      "id": "US-039",
+      "title": "Coordinator mode acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for coordinator-mode-contract.md covering contract, integration, and CLI behavior scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: mode precedence and reconcile logic is deterministic",
+        "Contract test: resumed session mode vs env mode has explicit precedence rule",
+        "Contract test: invalid mode transition returns InvalidModeTransition error",
+        "Integration test: resume path updates mode consistently",
+        "Integration test: tool visibility changes when mode switches",
+        "CLI behavior test: tool visibility and prompt mode branch are correct",
+        "CLI behavior test: mode switch event metadata (from, to, reason) is emitted",
+        "CLI behavior test: SessionModeMismatch surfaced as actionable message",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "Per coordinator-mode-contract.md §7 acceptance matrix. 8 test cases total (3 contract + 2 integration + 3 CLI).",
+      "dependsOn": [
+        "US-015"
+      ]
+    },
+    {
+      "id": "US-040",
+      "title": "KAIROS acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for kairos-contract.md covering contract, integration, and CLI behavior scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: mode resolution is deterministic for same inputs",
+        "Contract test: route precedence is deterministic",
+        "Contract test: PromptComposeFailed returned on invalid compose context",
+        "Integration test: KAIROS/BRIEF/CHANNELS combinations produce expected tool visibility",
+        "Integration test: slash routing behavior matches current semantics",
+        "Integration test: RouteConflict handled gracefully when multiple routes match",
+        "CLI behavior test: assistant-mode entry behavior matches current semantics",
+        "CLI behavior test: DisabledByPolicy surfaced as actionable message",
+        "CLI behavior test: mode switch via /brief command works end-to-end",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Per kairos-contract.md §7 acceptance matrix. 9 test cases total (3 contract + 3 integration + 3 CLI).",
+      "dependsOn": [
+        "US-014"
+      ]
+    },
+    {
+      "id": "US-041",
+      "title": "Multi-agent orchestration acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for multi-agent-orchestration-contract.md covering contract, integration, and CLI behavior scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: parallel fan-out rejects overlapping write scopes when policy forbids them",
+        "Contract test: notification parsing enforces structured payload fields (task_id, status, summary)",
+        "Contract test: synthesis requires completed/failed accounting and deterministic summary structure",
+        "Integration test: spawn 3 independent tasks in parallel and receive 3 notifications",
+        "Integration test: mixed result statuses (completed/failed/cancelled) aggregated correctly",
+        "Integration test: stop_task on already-terminal task is idempotent and non-fatal",
+        "CLI behavior test: coordinator mode exposes multi-agent controls and task status updates",
+        "CLI behavior test: non-coordinator mode blocks orchestration calls with explicit policy error",
+        "CLI behavior test: final user-visible summary includes launched tasks, findings, and next actions",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Per multi-agent-orchestration-contract.md §8 acceptance matrix. 9 test cases total (3 contract + 3 integration + 3 CLI).",
+      "dependsOn": [
+        "US-024"
+      ]
+    },
+    {
+      "id": "US-042",
+      "title": "TeamMem acceptance and security test suite",
+      "description": "As a developer, I want comprehensive acceptance and security tests for teammem-contract.md covering contract, integration, and security scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: path traversal/symlink escape returns PathValidationFailed",
+        "Contract test: secret findings skip file and never return raw secret content",
+        "Contract test: 412 conflicts stop at configured max retries (ConflictExhausted)",
+        "Integration test: pull → merge → push happy path with ETag handling",
+        "Integration test: unauthorized token maps to stable auth error class",
+        "Integration test: mixed payload with oversized + secret + valid entries behaves deterministically",
+        "Security test: secret scanner redaction path verified (no raw secrets in output)",
+        "Security test: write outside team root prevented (PathValidationFailed)",
+        "Security test: audit events emitted for skipped secrets and conflicts",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Per teammem-contract.md §8 acceptance matrix. 9 test cases total (3 contract + 3 integration + 3 security).",
+      "dependsOn": [
+        "US-022"
+      ]
+    },
+    {
+      "id": "US-043",
+      "title": "Ultraplan acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for ultraplan-contract.md covering contract, integration, and CLI behavior scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: invalid phase transition rejected with error",
+        "Contract test: concurrent launch attempt returns AlreadyActive",
+        "Contract test: stop/cleanup from active state transitions deterministically",
+        "Integration test: launch → poll → approved → completed happy path",
+        "Integration test: launch success + downstream failure triggers orphan archive attempt",
+        "Integration test: poll timeout path returns PollTimeout",
+        "CLI behavior test: bare command usage path returns expected guidance",
+        "CLI behavior test: keyword-trigger while active does not re-launch",
+        "CLI behavior test: stop command clears local active markers and session URL state",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Per ultraplan-contract.md §9 acceptance test matrix. 9 test cases total (3 contract + 3 integration + 3 CLI).",
+      "dependsOn": [
+        "US-020"
+      ]
+    },
+    {
+      "id": "US-044",
+      "title": "Agent triggers acceptance test suite",
+      "description": "As a developer, I want comprehensive acceptance tests for agent-triggers-contract.md covering contract, integration, and CLI behavior scenarios.",
+      "acceptanceCriteria": [
+        "Contract test: durable + teammate returns DurableNotAllowedForTeammate",
+        "Contract test: invalid cron expression returns InvalidCron",
+        "Contract test: owner mismatch on delete returns OwnershipViolation",
+        "Integration test: session-only task survives runtime tick but not process restart",
+        "Integration test: durable task reloads from store on restart",
+        "Integration test: remote dispatch with gate off returns GateDisabled",
+        "CLI behavior test: list shows scope and owner consistently",
+        "CLI behavior test: delete reports deterministic reason on ownership error",
+        "CLI behavior test: remote trigger failure prints non-leaky error class",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Per agent-triggers-contract.md §8 acceptance matrix. 9 test cases total (3 contract + 3 integration + 3 CLI).",
+      "dependsOn": [
+        "US-017"
+      ]
+    },
+    {
+      "id": "US-045",
+      "title": "Cross-feature integration test suite",
+      "description": "As a developer, I want dedicated integration tests for each of the 5 cross-feature pairs defined in integration-contracts.md.",
+      "acceptanceCriteria": [
+        "Bridge×Ultraplan test: launch failure after session creation always issues archive attempt",
+        "Bridge×Ultraplan test: archived session cannot re-enter running state",
+        "Bridge×Ultraplan test: concurrent operations do not corrupt active session pointer state",
+        "ChicagoMCP×ToolRuntime test: cleanup hooks run on normal completion and interruption",
+        "ChicagoMCP×ToolRuntime test: privileged capability cannot be activated via generic MCP registration",
+        "ChicagoMCP×ToolRuntime test: policy failure prevents side effects",
+        "TeamMem×KAIROS test: secret-detected content is never emitted in prompt payload",
+        "TeamMem×KAIROS test: invalid path keys are blocked and logged safely",
+        "TeamMem×KAIROS test: sync conflict retries remain bounded and observable",
+        "Triggers×Remote test: remote gate-off path keeps local tasks intact",
+        "Triggers×Remote test: durable/session-only semantics survive restart semantics",
+        "Triggers×Remote test: ownership violations return deterministic policy errors",
+        "Coordinator×MultiAgent test: parallel fan-out occurs only when write-scope conflicts absent",
+        "Coordinator×MultiAgent test: mixed worker outcomes produce deterministic aggregate status",
+        "Coordinator×MultiAgent test: final summary contains findings and actionable next steps with task traceability",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "Per integration-contracts.md. 15 test cases total (3 per cross-feature pair × 5 pairs). These are higher-level integration tests that span multiple crates.",
+      "dependsOn": [
+        "US-025"
+      ]
+    },
+    {
+      "id": "US-046",
+      "title": "Spec governance gate validation",
+      "description": "As a developer, I want spec governance checks automated so that implementation can only proceed when specs are validated.",
+      "acceptanceCriteria": [
+        "Spec QA checklist from acceptance-playbook.md encoded as verification script or test",
+        "Code evidence anchors: verify each contract doc's service traits exist in code",
+        "Crate boundary check: verify each service is in the correct crate per codename-mapping.md",
+        "Error taxonomy check: verify each contract's error types are defined in code",
+        "Cross-spec consistency: error naming conventions consistent across all contracts",
+        "Cross-spec consistency: fail-closed default policy applied everywhere",
+        "Cross-spec consistency: state machines have explicit terminal states",
+        "Cross-spec consistency: remote side effects are always recoverable/idempotent",
+        "spec-lock-v1.md release-gate criteria verified: all 8 contracts locked, acceptance-spec locked, no open waivers without expiry",
+        "Breaking changes to locked specs require explicit waiver with scope/owner/risk/expiry",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 0,
+      "passes": true,
+      "notes": "Per acceptance-playbook.md and spec-lock-v1.md. Create a spec_governance test module or script that validates spec-to-code alignment. This is a prerequisite gate before implementation.",
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-047",
+      "title": "Acceptance-spec architecture and functional parity validation",
+      "description": "As a developer, I want architecture acceptance criteria from acceptance-spec.md validated so that workspace structure, dependency direction, and functional parity are verified.",
+      "acceptanceCriteria": [
+        "Architecture acceptance: workspace structure matches spec (all crates present, correct hierarchy)",
+        "Architecture acceptance: dependency direction verified via cargo metadata DAG analysis",
+        "Architecture acceptance: no forbidden dependency edges exist",
+        "Functional parity: command parity — all CLI commands from spec are implemented",
+        "Functional parity: tool parity — all tools from spec are registered",
+        "Functional parity: parity test matrix exists with coverage thresholds",
+        "Observability: runbook documentation exists for operator scenarios",
+        "Observability: dry-run mode available for destructive operations",
+        "Final sign-off checklist from acceptance-spec.md §9 encoded as CI gate",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "Per acceptance-spec.md §2 (architecture), §4 (functional parity), §6 (observability), §9 (sign-off). This is the final validation story before release.",
+      "dependsOn": [
+        "US-028",
+        "US-045",
+        "US-046"
+      ]
     }
-  ]
+  ],
+  "metadata": {
+    "updatedAt": "2026-04-02T07:14:12.568Z"
+  }
 }

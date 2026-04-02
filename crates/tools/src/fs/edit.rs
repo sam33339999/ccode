@@ -1,4 +1,7 @@
 use async_trait::async_trait;
+use ccode_platform::security::{
+    DefaultSecretScanner, PathValidationError, PolicyError, ScanThenWritePolicy,
+};
 use ccode_ports::{
     tool::{FsPolicy, ToolContext, ToolPort},
     PortError,
@@ -46,28 +49,48 @@ impl ToolPort for FsEditTool {
             ctx.cwd.join(path)
         };
 
-        // Permission check
+        let policy = ScanThenWritePolicy::new(DefaultSecretScanner::default());
+        // Validation is executed before read/write mutations; scans run before final write.
         match &ctx.permission.fs_write {
             FsPolicy::None => {
                 return Err(PortError::PermissionDenied("fs_write is disabled".into()));
             }
             FsPolicy::Cwd => {
-                if !resolved.starts_with(&ctx.cwd) {
-                    return Err(PortError::PermissionDenied(format!(
-                        "path {} is outside cwd",
-                        resolved.display()
-                    )));
-                }
+                policy
+                    .validate_then_scan(&ctx.cwd, &resolved, "")
+                    .map_err(map_policy_error)?;
             }
             FsPolicy::Paths(allowed) => {
-                if !allowed.iter().any(|p| resolved.starts_with(p)) {
+                let mut last_error = None;
+                let mut allowed_hit = false;
+                for root in allowed {
+                    match policy.validate_then_scan(root, &resolved, "") {
+                        Ok(_) => {
+                            allowed_hit = true;
+                            break;
+                        }
+                        Err(PolicyError::Path(PathValidationError::OutsideRoot)) => continue,
+                        Err(err) => {
+                            last_error = Some(err);
+                            break;
+                        }
+                    }
+                }
+                if let Some(err) = last_error {
+                    return Err(map_policy_error(err));
+                }
+                if !allowed_hit {
                     return Err(PortError::PermissionDenied(format!(
                         "path {} is not in allowed paths",
                         resolved.display()
                     )));
                 }
             }
-            FsPolicy::Any => {}
+            FsPolicy::Any => {
+                policy
+                    .validate_then_scan(std::path::Path::new("/"), &resolved, "")
+                    .map_err(map_policy_error)?;
+            }
         }
 
         let original = tokio::fs::read_to_string(&resolved)
@@ -138,6 +161,44 @@ impl ToolPort for FsEditTool {
 
         let size_after = new_content.len() as u64;
 
+        // Enforce ordering: validate path first, then scan content, then write.
+        let resolved = match &ctx.permission.fs_write {
+            FsPolicy::None => unreachable!("handled earlier"),
+            FsPolicy::Cwd => policy
+                .validate_then_scan(&ctx.cwd, &resolved, &new_content)
+                .map_err(map_policy_error)?,
+            FsPolicy::Paths(allowed) => {
+                let mut last_error = None;
+                let mut validated = None;
+                for root in allowed {
+                    match policy.validate_then_scan(root, &resolved, &new_content) {
+                        Ok(path) => {
+                            validated = Some(path);
+                            break;
+                        }
+                        Err(PolicyError::Path(PathValidationError::OutsideRoot)) => continue,
+                        Err(err) => {
+                            last_error = Some(err);
+                            break;
+                        }
+                    }
+                }
+                if let Some(path) = validated {
+                    path
+                } else if let Some(err) = last_error {
+                    return Err(map_policy_error(err));
+                } else {
+                    return Err(PortError::PermissionDenied(format!(
+                        "path {} is not in allowed paths",
+                        resolved.display()
+                    )));
+                }
+            }
+            FsPolicy::Any => policy
+                .validate_then_scan(std::path::Path::new("/"), &resolved, &new_content)
+                .map_err(map_policy_error)?,
+        };
+
         // Atomic write
         let tmp_path = resolved.with_extension(format!(
             "{}.tmp",
@@ -160,5 +221,19 @@ impl ToolPort for FsEditTool {
             "size_after": size_after
         });
         Ok(result.to_string())
+    }
+}
+
+fn map_policy_error(err: PolicyError) -> PortError {
+    match err {
+        PolicyError::Path(path_err) => PortError::PermissionDenied(path_err.to_string()),
+        PolicyError::SecretDetected { findings } => {
+            let summary = findings
+                .iter()
+                .map(|f| format!("{}:{}", f.rule_id, f.label))
+                .collect::<Vec<_>>()
+                .join(", ");
+            PortError::Tool(format!("secret detected ({summary})"))
+        }
     }
 }

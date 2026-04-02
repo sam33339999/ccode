@@ -10,6 +10,8 @@ pub mod teammem_kairos_service;
 pub mod ultraplan_service;
 
 #[cfg(test)]
+mod agent_triggers_acceptance_tests;
+#[cfg(test)]
 mod bridge_mode_acceptance_tests;
 #[cfg(test)]
 mod coordinator_mode_acceptance_tests;

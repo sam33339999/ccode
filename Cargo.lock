@@ -195,6 +195,7 @@ dependencies = [
  "ccode-ports",
  "futures",
  "futures-core",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",
@@ -286,6 +287,14 @@ dependencies = [
 [[package]]
 name = "ccode-platform"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ccode-application",
+ "ccode-cron",
+ "ccode-state-store",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "ccode-ports"
@@ -341,6 +350,12 @@ dependencies = [
 [[package]]
 name = "ccode-state-store"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "ccode-tools"

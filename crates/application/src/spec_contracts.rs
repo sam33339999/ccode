@@ -4,6 +4,7 @@ use ccode_domain::{
     event::DomainEvent,
     session::SessionId,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -59,26 +60,27 @@ pub trait RemoteSessionService: Send + Sync {
     ) -> Result<RemoteSessionSummary, RemoteSessionError>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TriggerScope {
     SessionOnly,
     Durable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TriggerOwner {
     MainAgent,
     Teammate(String),
     TeamLead,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TriggerTask {
     pub id: String,
     pub cron: String,
     pub prompt: String,
     pub scope: TriggerScope,
     pub owner: TriggerOwner,
+    pub durable_intent: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

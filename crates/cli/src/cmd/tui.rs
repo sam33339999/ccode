@@ -10,18 +10,19 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::output::{
-    ErrorCategory, classify_error, error_category_label, summarize_tool_args, worker_status_label,
+    ErrorCategory, ToolConfirmationDecision, classify_error, classify_tool_risk,
+    error_category_label, summarize_tool_args, worker_status_label,
 };
 
 #[derive(Args, Default)]
@@ -45,6 +46,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
     let mut app = AppState::default();
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let mut runtime = RuntimeState::default();
+    let always_allowed_tools: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     let runtime_deps = match state {
         Ok(bootstrap_state) => {
@@ -88,10 +90,15 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                             runtime.session_id.clone(),
                             prompt,
                             ui_tx.clone(),
+                            Arc::clone(&always_allowed_tools),
                         );
                     } else {
                         app.push_error_status("provider unavailable".to_string());
                     }
+                    dirty = true;
+                }
+                AppAction::ToolApprovalResolved { name, decision } => {
+                    app.push_info_status(format!("tool decision: {} {}", name, decision.label()));
                     dirty = true;
                 }
             }
@@ -143,7 +150,23 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
                 .title_style(Style::default().add_modifier(Modifier::BOLD)),
         );
     frame.render_widget(input, input_pane);
-    frame.set_cursor_position(app.input_cursor_position(input_pane));
+    if !app.has_pending_tool_approval() {
+        frame.set_cursor_position(app.input_cursor_position(input_pane));
+    }
+
+    if let Some(modal) = app.tool_approval.as_ref() {
+        let modal_area = centered_rect(frame.area(), 80, 14);
+        frame.render_widget(Clear, modal_area);
+        let modal_widget = Paragraph::new(modal.render_lines())
+            .block(
+                Block::default()
+                    .title("Tool Approval Required")
+                    .borders(Borders::ALL)
+                    .title_style(Style::default().add_modifier(Modifier::BOLD)),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(modal_widget, modal_area);
+    }
 }
 
 fn split_layout(area: Rect) -> [Rect; 3] {
@@ -153,6 +176,16 @@ fn split_layout(area: Rect) -> [Rect; 3] {
         Constraint::Length(3),
     ])
     .areas(area)
+}
+
+fn centered_rect(area: Rect, width_percent: u16, height: u16) -> Rect {
+    let preferred_width = (area.width.saturating_mul(width_percent) / 100).max(40);
+    let width = preferred_width.min(area.width.saturating_sub(2).max(1));
+    let preferred_height = height.min(area.height.saturating_sub(2)).max(8);
+    let height = preferred_height.min(area.height.saturating_sub(2).max(1));
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
 }
 
 #[derive(Default)]
@@ -184,9 +217,22 @@ struct StatusLine {
 enum ConversationLine {
     User(String),
     Assistant(String),
-    ToolStart { name: String, args_summary: String },
-    ToolDone { name: String, success: bool },
-    WorkerStatus { task_id: String, status: String },
+    ToolStart {
+        name: String,
+        args_summary: String,
+    },
+    ToolDone {
+        name: String,
+        success: bool,
+    },
+    ToolDecision {
+        name: String,
+        decision: ToolApprovalAction,
+    },
+    WorkerStatus {
+        task_id: String,
+        status: String,
+    },
 }
 
 #[derive(Default)]
@@ -201,12 +247,18 @@ struct AppState {
     suppress_enter_submit_once: bool,
     active_assistant_idx: Option<usize>,
     conversation_scroll: u16,
+    tool_approval: Option<ToolApprovalModal>,
     should_quit: bool,
 }
 
+#[derive(Debug)]
 enum AppAction {
     None,
     Submit(String),
+    ToolApprovalResolved {
+        name: String,
+        decision: ToolApprovalAction,
+    },
     Quit,
 }
 
@@ -220,6 +272,78 @@ enum AppInputEvent {
 struct InputBuffer {
     text: String,
     cursor: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolApprovalAction {
+    AllowOnce,
+    Deny,
+    AllowAlways,
+}
+
+impl ToolApprovalAction {
+    fn from_selection(selected: usize) -> Self {
+        match selected {
+            1 => Self::Deny,
+            2 => Self::AllowAlways,
+            _ => Self::AllowOnce,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::AllowOnce => "allow",
+            Self::Deny => "deny",
+            Self::AllowAlways => "always-allow",
+        }
+    }
+
+    fn to_confirmation_decision(self) -> ToolConfirmationDecision {
+        match self {
+            Self::AllowOnce => ToolConfirmationDecision::AllowOnce,
+            Self::Deny => ToolConfirmationDecision::Deny,
+            Self::AllowAlways => ToolConfirmationDecision::AllowAlways,
+        }
+    }
+}
+
+struct ToolApprovalModal {
+    tool_name: String,
+    params_summary: String,
+    risk_level: String,
+    selected: usize,
+    response_tx: Option<tokio::sync::oneshot::Sender<ToolConfirmationDecision>>,
+}
+
+impl ToolApprovalModal {
+    fn render_lines(&self) -> Vec<Line<'static>> {
+        let actions = [
+            ("Allow once [Y]", 0usize),
+            ("Deny [N]", 1usize),
+            ("Always allow [A]", 2usize),
+        ];
+        let action_line = actions
+            .iter()
+            .map(|(label, idx)| {
+                if self.selected == *idx {
+                    format!("> {label} <")
+                } else {
+                    (*label).to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("   ");
+
+        vec![
+            Line::from(format!("Tool: {}", self.tool_name)),
+            Line::from(format!("Parameters: {}", self.params_summary)),
+            Line::from(format!("Risk: {}", self.risk_level)),
+            Line::from(""),
+            Line::from(format!("Actions: {action_line}")),
+            Line::from("Keys: y=allow n=deny a=always-allow"),
+            Line::from("Navigate: Tab/Shift+Tab or Left/Right, Enter=confirm, Esc=deny"),
+        ]
+    }
 }
 
 impl InputBuffer {
@@ -327,6 +451,9 @@ impl AppState {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return AppAction::Quit;
+        }
+        if self.tool_approval.is_some() {
+            return self.handle_approval_key(key);
         }
 
         match key.code {
@@ -506,6 +633,92 @@ impl AppState {
         self.active_assistant_idx = None;
     }
 
+    fn open_tool_approval(
+        &mut self,
+        name: String,
+        args: Value,
+        response_tx: tokio::sync::oneshot::Sender<ToolConfirmationDecision>,
+    ) {
+        self.tool_approval = Some(ToolApprovalModal {
+            risk_level: classify_tool_risk(name.as_str()).label().to_string(),
+            tool_name: name,
+            params_summary: summarize_tool_args(&args),
+            selected: 0,
+            response_tx: Some(response_tx),
+        });
+    }
+
+    #[cfg(test)]
+    fn open_tool_approval_for_test(&mut self, name: String, args: Value) {
+        self.tool_approval = Some(ToolApprovalModal {
+            risk_level: classify_tool_risk(name.as_str()).label().to_string(),
+            tool_name: name,
+            params_summary: summarize_tool_args(&args),
+            selected: 0,
+            response_tx: None,
+        });
+    }
+
+    fn has_pending_tool_approval(&self) -> bool {
+        self.tool_approval.is_some()
+    }
+
+    fn handle_approval_key(&mut self, key: KeyEvent) -> AppAction {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.resolve_tool_approval(ToolApprovalAction::AllowOnce)
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.resolve_tool_approval(ToolApprovalAction::Deny)
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.resolve_tool_approval(ToolApprovalAction::AllowAlways)
+            }
+            KeyCode::Tab | KeyCode::Right => {
+                if let Some(modal) = self.tool_approval.as_mut() {
+                    modal.selected = (modal.selected + 1) % 3;
+                }
+                AppAction::None
+            }
+            KeyCode::BackTab | KeyCode::Left => {
+                if let Some(modal) = self.tool_approval.as_mut() {
+                    modal.selected = if modal.selected == 0 {
+                        2
+                    } else {
+                        modal.selected - 1
+                    };
+                }
+                AppAction::None
+            }
+            KeyCode::Enter => {
+                let selected = self
+                    .tool_approval
+                    .as_ref()
+                    .map(|modal| modal.selected)
+                    .unwrap_or(0);
+                self.resolve_tool_approval(ToolApprovalAction::from_selection(selected))
+            }
+            _ => AppAction::None,
+        }
+    }
+
+    fn resolve_tool_approval(&mut self, decision: ToolApprovalAction) -> AppAction {
+        let Some(mut modal) = self.tool_approval.take() else {
+            return AppAction::None;
+        };
+        if let Some(response_tx) = modal.response_tx.take() {
+            let _ = response_tx.send(decision.to_confirmation_decision());
+        }
+        self.conversation.push(ConversationLine::ToolDecision {
+            name: modal.tool_name.clone(),
+            decision,
+        });
+        AppAction::ToolApprovalResolved {
+            name: modal.tool_name,
+            decision,
+        }
+    }
+
     fn push_tool_start(&mut self, name: String, args: Value) {
         self.conversation.push(ConversationLine::ToolStart {
             name,
@@ -588,6 +801,13 @@ impl AppState {
                     let marker = if *success { "[ok]" } else { "[fail]" };
                     vec![Line::from(format!("[tool:done] {name} {marker}"))]
                 }
+                ConversationLine::ToolDecision { name, decision } => {
+                    vec![Line::from(format!(
+                        "[tool:decision] {} {}",
+                        name,
+                        decision.label()
+                    ))]
+                }
                 ConversationLine::WorkerStatus { task_id, status } => {
                     vec![Line::from(format!("[worker] {task_id} {status}"))]
                 }
@@ -664,13 +884,30 @@ fn next_grapheme_boundary(text: &str, cursor: usize) -> usize {
     text.len()
 }
 
-#[derive(Debug)]
 enum UiEvent {
     AssistantDelta(String),
     AssistantDone,
-    ToolStart { name: String, args: Value },
-    ToolDone { name: String, success: bool },
-    WorkerStatus { task_id: String, status: String },
+    ToolStart {
+        name: String,
+        args: Value,
+    },
+    ToolDone {
+        name: String,
+        success: bool,
+    },
+    ToolApprovalRequested {
+        name: String,
+        args: Value,
+        response_tx: tokio::sync::oneshot::Sender<ToolConfirmationDecision>,
+    },
+    ToolError {
+        name: String,
+        message: String,
+    },
+    WorkerStatus {
+        task_id: String,
+        status: String,
+    },
     Error(String),
     SessionReady(String),
 }
@@ -715,6 +952,14 @@ fn drain_ui_events(
             }
             UiEvent::ToolStart { name, args } => app.push_tool_start(name, args),
             UiEvent::ToolDone { name, success } => app.push_tool_done(name, success),
+            UiEvent::ToolApprovalRequested {
+                name,
+                args,
+                response_tx,
+            } => app.open_tool_approval(name, args, response_tx),
+            UiEvent::ToolError { name, message } => {
+                app.push_error_status(format!("tool {name}: {message}"));
+            }
             UiEvent::WorkerStatus { task_id, status } => app.push_worker_status(task_id, status),
             UiEvent::Error(message) => {
                 runtime.in_flight = false;
@@ -734,6 +979,7 @@ fn spawn_agent_turn(
     session_id: Option<String>,
     user_content: String,
     ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+    always_allowed_tools: Arc<Mutex<HashSet<String>>>,
 ) {
     tokio::spawn(async move {
         let Some(provider) = bootstrap_state.provider.clone() else {
@@ -762,11 +1008,40 @@ fn spawn_agent_turn(
             let registry = Arc::clone(&tool_registry);
             let tool_ctx = Arc::clone(&tool_ctx);
             let tx = tool_event_tx.clone();
+            let always_allowed_tools = Arc::clone(&always_allowed_tools);
             Box::pin(async move {
                 let _ = tx.send(UiEvent::ToolStart {
                     name: name.clone(),
                     args: args.clone(),
                 });
+                let is_always_allowed = always_allowed_tools
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .contains(&name);
+                if !is_always_allowed {
+                    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+                    if tx
+                        .send(UiEvent::ToolApprovalRequested {
+                            name: name.clone(),
+                            args: args.clone(),
+                            response_tx,
+                        })
+                        .is_err()
+                    {
+                        return Err("approval prompt unavailable".to_string());
+                    }
+                    let decision = response_rx.await.unwrap_or(ToolConfirmationDecision::Deny);
+                    match decision {
+                        ToolConfirmationDecision::Deny => return Err("user denied".to_string()),
+                        ToolConfirmationDecision::AllowAlways => {
+                            always_allowed_tools
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .insert(name.clone());
+                        }
+                        ToolConfirmationDecision::AllowOnce => {}
+                    }
+                }
                 let result = registry
                     .execute(&name, args, &tool_ctx)
                     .await
@@ -789,7 +1064,10 @@ fn spawn_agent_turn(
                     success: result.is_ok(),
                 });
                 if let Err(err) = &result {
-                    let _ = tx.send(UiEvent::Error(err.clone()));
+                    let _ = tx.send(UiEvent::ToolError {
+                        name: name.clone(),
+                        message: err.clone(),
+                    });
                 }
                 result
             })
@@ -847,9 +1125,13 @@ fn install_panic_restoration_hook() {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppAction, AppState, ConversationLine, DrawLimiter, StatusKind, split_layout};
+    use super::{
+        AppAction, AppState, ConversationLine, DrawLimiter, StatusKind, ToolApprovalAction,
+        split_layout,
+    };
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::layout::Rect;
+    use serde_json::json;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1020,5 +1302,63 @@ mod tests {
         let mut app = AppState::default();
         app.push_info_status("ready".to_string());
         assert!(matches!(app.status.back().unwrap().kind, StatusKind::Info));
+    }
+
+    #[test]
+    fn tool_approval_modal_shows_and_denial_is_logged() {
+        let mut app = AppState::default();
+        app.open_tool_approval_for_test("shell".to_string(), json!({"cmd":"rm -rf /tmp/demo"}));
+
+        assert!(app.has_pending_tool_approval());
+        let action = app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        match action {
+            AppAction::ToolApprovalResolved {
+                name,
+                decision: ToolApprovalAction::Deny,
+            } => assert_eq!(name, "shell"),
+            other => panic!("expected deny decision, got {other:?}"),
+        }
+        assert!(!app.has_pending_tool_approval());
+        let rendered = app.render_conversation();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.to_string().contains("[tool:decision] shell deny")),
+            "deny decision should be logged in conversation pane"
+        );
+    }
+
+    #[test]
+    fn tool_approval_modal_supports_tab_and_enter_shortcuts() {
+        let mut app = AppState::default();
+        app.open_tool_approval_for_test("fs_write".to_string(), json!({"path":"./a.txt"}));
+
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            action,
+            AppAction::ToolApprovalResolved {
+                decision: ToolApprovalAction::Deny,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn tool_approval_modal_supports_always_allow_shortcut() {
+        let mut app = AppState::default();
+        app.open_tool_approval_for_test(
+            "browser".to_string(),
+            json!({"url":"https://example.com"}),
+        );
+
+        let action = app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(matches!(
+            action,
+            AppAction::ToolApprovalResolved {
+                decision: ToolApprovalAction::AllowAlways,
+                ..
+            }
+        ));
     }
 }

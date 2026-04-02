@@ -21,3 +21,5 @@ crossterm          = "0.28"
 ratatui            = "0.28"
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+unicode-segmentation = "1.12"
+unicode-width      = "0.2"

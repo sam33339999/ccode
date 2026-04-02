@@ -1,7 +1,7 @@
 use ccode_application::commands::agent_run::AgentRunCommand;
 use ccode_bootstrap::AppState as BootstrapState;
 use clap::Args;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -17,6 +17,8 @@ use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use super::output::{
     ErrorCategory, classify_error, error_category_label, summarize_tool_args, worker_status_label,
@@ -66,10 +68,14 @@ async fn run_ui_loop() -> anyhow::Result<()> {
     while !app.should_quit {
         drain_ui_events(&mut app, &mut runtime, &mut ui_rx, &mut dirty);
         let timeout = DrawLimiter::next_timeout(last_draw, dirty);
-        if event::poll(Duration::from_millis(50))?
-            && let Event::Key(key) = event::read()?
-        {
-            match app.handle_key(key) {
+        if event::poll(Duration::from_millis(50))? {
+            let action = match event::read()? {
+                Event::Key(key) => app.handle_input_event(AppInputEvent::Key(key)),
+                Event::Paste(text) => app.handle_input_event(AppInputEvent::Paste(text)),
+                _ => AppAction::None,
+            };
+
+            match action {
                 AppAction::None => {}
                 AppAction::Quit => app.should_quit = true,
                 AppAction::Submit(prompt) => {
@@ -128,13 +134,16 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     );
     frame.render_widget(status, status_pane);
 
-    let input = Paragraph::new(app.input.as_str()).block(
-        Block::default()
-            .title("Input")
-            .borders(Borders::ALL)
-            .title_style(Style::default().add_modifier(Modifier::BOLD)),
-    );
+    let input = Paragraph::new(app.render_input())
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .title("Input")
+                .borders(Borders::ALL)
+                .title_style(Style::default().add_modifier(Modifier::BOLD)),
+        );
     frame.render_widget(input, input_pane);
+    frame.set_cursor_position(app.input_cursor_position(input_pane));
 }
 
 fn split_layout(area: Rect) -> [Rect; 3] {
@@ -184,7 +193,12 @@ enum ConversationLine {
 struct AppState {
     conversation: Vec<ConversationLine>,
     status: VecDeque<StatusLine>,
-    input: String,
+    input: InputBuffer,
+    input_history: VecDeque<String>,
+    history_cursor: Option<usize>,
+    history_draft: Option<String>,
+    ime_preedit: Option<String>,
+    suppress_enter_submit_once: bool,
     active_assistant_idx: Option<usize>,
     conversation_scroll: u16,
     should_quit: bool,
@@ -196,37 +210,191 @@ enum AppAction {
     Quit,
 }
 
+#[derive(Clone, Debug)]
+enum AppInputEvent {
+    Key(KeyEvent),
+    Paste(String),
+}
+
+#[derive(Default)]
+struct InputBuffer {
+    text: String,
+    cursor: usize,
+}
+
+impl InputBuffer {
+    fn as_str(&self) -> &str {
+        self.text.as_str()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
+    fn set_text(&mut self, text: String) {
+        self.cursor = text.len();
+        self.text = text;
+    }
+
+    fn insert_char(&mut self, c: char) {
+        let mut buf = [0; 4];
+        self.insert_str(c.encode_utf8(&mut buf));
+    }
+
+    fn insert_str(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        self.text.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = prev_grapheme_boundary(self.text.as_str(), self.cursor);
+    }
+
+    fn move_right(&mut self) {
+        self.cursor = next_grapheme_boundary(self.text.as_str(), self.cursor);
+    }
+
+    fn move_to_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_to_end(&mut self) {
+        self.cursor = self.text.len();
+    }
+
+    fn backspace_grapheme(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let start = prev_grapheme_boundary(self.text.as_str(), self.cursor);
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    fn cursor_display_offset(&self) -> (u16, u16) {
+        let before = &self.text[..self.cursor];
+        let mut row = 0usize;
+        let mut col = 0usize;
+        for (idx, line) in before.split('\n').enumerate() {
+            if idx > 0 {
+                row += 1;
+            }
+            col = UnicodeWidthStr::width(line);
+        }
+        (row as u16, col as u16)
+    }
+}
+
 impl AppState {
+    fn handle_input_event(&mut self, event: AppInputEvent) -> AppAction {
+        match event {
+            AppInputEvent::Key(key) => self.handle_key(key),
+            AppInputEvent::Paste(text) => {
+                self.clear_preedit_state();
+                self.input.insert_str(text.as_str());
+                self.clear_history_navigation();
+                AppAction::None
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn ime_preedit_for_test(&mut self, text: String) {
+        self.ime_preedit = if text.is_empty() { None } else { Some(text) };
+    }
+
+    #[cfg(test)]
+    fn ime_commit_for_test(&mut self, text: String) {
+        if !text.is_empty() {
+            self.input.insert_str(text.as_str());
+            self.suppress_enter_submit_once = true;
+        }
+        self.ime_preedit = None;
+        self.clear_history_navigation();
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> AppAction {
+        if key.kind == KeyEventKind::Release {
+            return AppAction::None;
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return AppAction::Quit;
         }
 
         match key.code {
-            KeyCode::Esc => AppAction::Quit,
+            KeyCode::Esc => {
+                self.ime_preedit = None;
+                AppAction::Quit
+            }
             KeyCode::Char('q') if self.input.is_empty() => AppAction::Quit,
-            KeyCode::Enter => self.submit_input(),
-            KeyCode::Backspace => {
-                self.input.pop();
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.clear_preedit_state();
+                self.input.insert_char('\n');
+                self.clear_history_navigation();
                 AppAction::None
             }
-            KeyCode::Up => self.scroll_up(1),
-            KeyCode::Down => self.scroll_down(1),
+            KeyCode::Enter if self.ime_preedit.is_some() || self.suppress_enter_submit_once => {
+                self.suppress_enter_submit_once = false;
+                AppAction::None
+            }
+            KeyCode::Enter => self.submit_input(),
+            KeyCode::Backspace => {
+                self.clear_preedit_state();
+                self.input.backspace_grapheme();
+                self.clear_history_navigation();
+                AppAction::None
+            }
+            KeyCode::Left => {
+                self.input.move_left();
+                AppAction::None
+            }
+            KeyCode::Right => {
+                self.input.move_right();
+                AppAction::None
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => self.scroll_up(1),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => self.scroll_down(1),
+            KeyCode::Up => {
+                self.recall_history_prev();
+                AppAction::None
+            }
+            KeyCode::Down => {
+                self.recall_history_next();
+                AppAction::None
+            }
             KeyCode::PageUp => self.scroll_up(10),
             KeyCode::PageDown => self.scroll_down(10),
             KeyCode::Home => {
-                self.conversation_scroll = 0;
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.conversation_scroll = 0;
+                } else {
+                    self.input.move_to_start();
+                }
                 AppAction::None
             }
             KeyCode::End => {
-                self.conversation_scroll = u16::MAX;
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.conversation_scroll = u16::MAX;
+                } else {
+                    self.input.move_to_end();
+                }
                 AppAction::None
             }
             KeyCode::Char(c)
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                self.input.push(c);
+                self.clear_preedit_state();
+                self.input.insert_char(c);
+                self.clear_history_navigation();
                 AppAction::None
             }
             _ => AppAction::None,
@@ -234,19 +402,86 @@ impl AppState {
     }
 
     fn submit_input(&mut self) -> AppAction {
-        let input = self.input.trim().to_string();
-        if input.is_empty() {
+        let raw_input = self.input.as_str().to_string();
+        let normalized = raw_input.trim().to_string();
+        if normalized.is_empty() {
             return AppAction::None;
         }
-        if matches!(input.as_str(), "q" | "quit" | "exit") {
+        if matches!(normalized.as_str(), "q" | "quit" | "exit") {
             return AppAction::Quit;
         }
+        self.push_history(raw_input.clone());
 
         self.conversation
-            .push(ConversationLine::User(input.clone()));
+            .push(ConversationLine::User(raw_input.clone()));
         self.active_assistant_idx = None;
         self.input.clear();
-        AppAction::Submit(input)
+        self.clear_history_navigation();
+        self.ime_preedit = None;
+        AppAction::Submit(raw_input)
+    }
+
+    fn clear_preedit_state(&mut self) {
+        self.ime_preedit = None;
+        self.suppress_enter_submit_once = false;
+    }
+
+    fn clear_history_navigation(&mut self) {
+        self.history_cursor = None;
+        self.history_draft = None;
+    }
+
+    fn push_history(&mut self, item: String) {
+        const MAX_HISTORY: usize = 100;
+        if self
+            .input_history
+            .back()
+            .is_some_and(|last| last.as_str() == item.as_str())
+        {
+            return;
+        }
+        if self.input_history.len() >= MAX_HISTORY {
+            self.input_history.pop_front();
+        }
+        self.input_history.push_back(item);
+    }
+
+    fn recall_history_prev(&mut self) {
+        if self.input_history.is_empty() {
+            return;
+        }
+
+        let next_idx = match self.history_cursor {
+            Some(current) => current.saturating_sub(1),
+            None => {
+                self.history_draft = Some(self.input.as_str().to_string());
+                self.input_history.len() - 1
+            }
+        };
+        self.history_cursor = Some(next_idx);
+        if let Some(entry) = self.input_history.get(next_idx) {
+            self.input.set_text(entry.clone());
+        }
+        self.clear_preedit_state();
+    }
+
+    fn recall_history_next(&mut self) {
+        let Some(current) = self.history_cursor else {
+            return;
+        };
+
+        if current + 1 < self.input_history.len() {
+            let next_idx = current + 1;
+            self.history_cursor = Some(next_idx);
+            if let Some(entry) = self.input_history.get(next_idx) {
+                self.input.set_text(entry.clone());
+            }
+        } else {
+            self.history_cursor = None;
+            let draft = self.history_draft.take().unwrap_or_default();
+            self.input.set_text(draft);
+        }
+        self.clear_preedit_state();
     }
 
     fn apply_delta(&mut self, delta: &str) {
@@ -374,6 +609,59 @@ impl AppState {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    fn render_input(&self) -> String {
+        let Some(preedit) = &self.ime_preedit else {
+            return self.input.as_str().to_string();
+        };
+        if preedit.is_empty() {
+            return self.input.as_str().to_string();
+        }
+
+        let cursor = self.input.cursor;
+        let mut rendered = self.input.as_str().to_string();
+        rendered.insert_str(cursor, preedit.as_str());
+        rendered
+    }
+
+    fn input_cursor_position(&self, input_pane: Rect) -> (u16, u16) {
+        let inner_x = input_pane.x.saturating_add(1);
+        let inner_y = input_pane.y.saturating_add(1);
+        let inner_width = input_pane.width.saturating_sub(2).max(1);
+        let inner_height = input_pane.height.saturating_sub(2).max(1);
+
+        let (mut row, mut col) = self.input.cursor_display_offset();
+        row = row.saturating_add(col / inner_width);
+        col %= inner_width;
+
+        (
+            inner_x.saturating_add(col.min(inner_width.saturating_sub(1))),
+            inner_y.saturating_add(row.min(inner_height.saturating_sub(1))),
+        )
+    }
+}
+
+fn prev_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    let mut prev = 0usize;
+    for (idx, _) in text.grapheme_indices(true) {
+        if idx >= cursor {
+            break;
+        }
+        prev = idx;
+    }
+    prev
+}
+
+fn next_grapheme_boundary(text: &str, cursor: usize) -> usize {
+    if cursor >= text.len() {
+        return text.len();
+    }
+    for (idx, _) in text.grapheme_indices(true) {
+        if idx > cursor {
+            return idx;
+        }
+    }
+    text.len()
 }
 
 #[derive(Debug)]
@@ -560,7 +848,7 @@ fn install_panic_restoration_hook() {
 #[cfg(test)]
 mod tests {
     use super::{AppAction, AppState, ConversationLine, DrawLimiter, StatusKind, split_layout};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::layout::Rect;
     use std::time::{Duration, Instant};
 
@@ -616,10 +904,97 @@ mod tests {
     fn conversation_scroll_navigation_changes_offset() {
         let mut app = AppState::default();
         app.conversation_scroll = 10;
-        let _ = app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
         assert_eq!(app.conversation_scroll, 9);
         let _ = app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
         assert_eq!(app.conversation_scroll, 19);
+    }
+
+    #[test]
+    fn grapheme_aware_backspace_and_cursor_navigation() {
+        let mut app = AppState::default();
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Char('🙂'), KeyModifiers::NONE));
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Char('你'), KeyModifiers::NONE));
+
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+
+        assert_eq!(app.input.as_str(), "a你");
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.input.as_str(), "a你");
+    }
+
+    #[test]
+    fn up_down_recalls_input_history() {
+        let mut app = AppState::default();
+        app.input.set_text("first".to_string());
+        assert!(matches!(app.submit_input(), AppAction::Submit(_)));
+        app.input.set_text("second".to_string());
+        assert!(matches!(app.submit_input(), AppAction::Submit(_)));
+
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.input.as_str(), "second");
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.input.as_str(), "first");
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.input.as_str(), "second");
+    }
+
+    #[test]
+    fn enter_submits_but_shift_enter_inserts_newline() {
+        let mut app = AppState::default();
+        app.input.set_text("line one".to_string());
+        let _ = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        app.input.insert_str("line two");
+
+        let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match action {
+            AppAction::Submit(payload) => assert_eq!(payload, "line one\nline two"),
+            _ => panic!("expected submit action"),
+        }
+    }
+
+    #[test]
+    fn ime_preedit_and_commit_do_not_submit_prematurely() {
+        let mut app = AppState::default();
+        app.ime_preedit_for_test("ni".to_string());
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            AppAction::None
+        ));
+
+        app.ime_commit_for_test("你".to_string());
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            AppAction::None
+        ));
+        assert!(matches!(
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            AppAction::Submit(_)
+        ));
+    }
+
+    #[test]
+    fn input_cursor_position_accounts_for_fullwidth_and_wrapping() {
+        let mut app = AppState::default();
+        app.input.set_text("a你🙂".to_string());
+        let pos = app.input_cursor_position(Rect::new(0, 0, 6, 4));
+        assert_eq!(pos, (2, 2));
+    }
+
+    #[test]
+    fn key_release_events_are_ignored() {
+        let mut app = AppState::default();
+        let key = KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::empty(),
+        };
+        let action = app.handle_key(key);
+        assert!(matches!(action, AppAction::None));
+        assert_eq!(app.input.as_str(), "");
     }
 
     #[test]

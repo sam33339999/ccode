@@ -1,0 +1,16 @@
+[package]
+name = "ccode-bootstrap"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ccode-domain       = { workspace = true }
+ccode-ports        = { workspace = true }
+ccode-config       = { workspace = true }
+ccode-provider     = { workspace = true }
+ccode-application  = { workspace = true }
+ccode-session      = { path = "../session" }
+ccode-tools        = { path = "../tools" }
+ccode-cron         = { path = "../cron" }
+thiserror           = { workspace = true }
+tracing             = { workspace = true }

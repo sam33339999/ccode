@@ -1,0 +1,550 @@
+{
+  "name": "CCode Rust Agent",
+  "branchName": "ralph/ccode-full-spec",
+  "description": "Wire existing 10 Rust crates into a fully-featured AI coding agent CLI per all 15 spec docs, from core UX polish through MCP, KAIROS, Bridge, ULTRAPLAN, TEAMMEM, and Multi-Agent orchestration.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "REPL multi-turn conversation mode",
+      "description": "As a user, I want to run `ccode repl` and have a persistent multi-turn conversation so that I can iterate on tasks without restarting.",
+      "acceptanceCriteria": [
+        "`ccode repl` starts an interactive prompt loop",
+        "Each input round uses the same session, preserving full conversation history",
+        "Supports `/exit` or Ctrl-D to quit",
+        "Supports `/clear` to reset session history",
+        "Session auto-persists to file via FileSessionRepo",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "Implement in crates/cli/src/cmd/repl.rs. Use bootstrap::wire_from_config_with_cwd() to get AppState, then loop stdin → AgentRunCommand::run() with same session_id.",
+      "dependsOn": []
+    },
+    {
+      "id": "US-002",
+      "title": "Streaming output formatting",
+      "description": "As a user, I want streaming output to display cleanly with proper formatting so that the experience feels polished.",
+      "acceptanceCriteria": [
+        "LLM delta tokens print incrementally without extra newlines or garbled text",
+        "Tool call start displays tool name and parameter summary",
+        "Tool result displays completion status (success/failure)",
+        "Error messages show clear category (auth / network / rate limit)",
+        "Markdown code blocks display correctly in terminal",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "Touch crates/cli/src/cmd/agent.rs streaming delta handler. Consider a small render helper for markdown formatting.",
+      "dependsOn": []
+    },
+    {
+      "id": "US-003",
+      "title": "Tool confirmation UX optimization",
+      "description": "As a user, I want a clear tool approval UX so that I can quickly allow or deny tool executions.",
+      "acceptanceCriteria": [
+        "Before tool execution, display: tool name, parameters, risk level",
+        "Support `y` (allow), `n` (deny), `a` (always allow this tool in session)",
+        "Always-allowed tools skip confirmation for the rest of the session",
+        "Denial continues the agent loop without aborting the conversation",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "Existing agent.rs has basic confirmation. Enhance the prompt formatting and add 'a' (always) option with a HashSet<String> tracker.",
+      "dependsOn": []
+    },
+    {
+      "id": "US-004",
+      "title": "Session management CLI commands",
+      "description": "As a user, I want to list, view, and delete sessions so that I can manage my conversation history.",
+      "acceptanceCriteria": [
+        "`ccode sessions list` shows session summaries (ID, timestamp, message count)",
+        "`ccode sessions show <id>` displays full conversation content",
+        "`ccode sessions delete <id>` removes the specified session",
+        "`ccode sessions clear` deletes all sessions (with confirmation prompt)",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Implement in crates/cli/src/cmd/sessions.rs. Use SessionRepository trait from ports.",
+      "dependsOn": ["US-001"]
+    },
+    {
+      "id": "US-005",
+      "title": "Cron management CLI commands",
+      "description": "As a user, I want to manage cron jobs via CLI so that I can schedule recurring agent tasks.",
+      "acceptanceCriteria": [
+        "`ccode cron list` displays all scheduled tasks",
+        "`ccode cron create --schedule '...' --message '...'` creates a task",
+        "`ccode cron delete <id>` removes a task",
+        "`ccode cron run <id>` manually triggers one execution",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "Implement in crates/cli/src/cmd/cron.rs. Use CronRepository from ports and FileCronRepo from cron crate.",
+      "dependsOn": ["US-001"]
+    },
+    {
+      "id": "US-006",
+      "title": "Unified error handling and user messages",
+      "description": "As a user, I want consistent error messages across all commands so that I can understand what went wrong.",
+      "acceptanceCriteria": [
+        "All crate error types convert to user-friendly messages at CLI layer",
+        "Network errors suggest checking connectivity",
+        "Auth errors suggest checking API key configuration",
+        "Missing config suggests config.example.toml location",
+        "Unexpected errors include correlation context (session id, provider name)",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Add a display_error() helper in cli crate that pattern-matches on AppError/WireError/ConfigError variants and prints user-friendly output.",
+      "dependsOn": ["US-001", "US-002", "US-003", "US-004", "US-005"]
+    },
+    {
+      "id": "US-007",
+      "title": "Canonical LLM types in domain crate",
+      "description": "As a developer, I want canonical LLM types (ContentBlock, LlmRequest, LlmResponse, StreamEvent) defined in domain so that all crates share one source of truth.",
+      "acceptanceCriteria": [
+        "ContentBlock enum with variants: Text, ToolUse, ToolResult (per llm-compat-contract.md)",
+        "LlmRequest / LlmResponse defined in domain, replacing CompletionRequest/Response in ports",
+        "StopReason enum: EndTurn, MaxTokens, ToolUse, StopSequence",
+        "StreamEvent enum: ContentDelta, ToolCallDelta, MessageComplete",
+        "TokenUsage struct: input_tokens, output_tokens",
+        "All types derive Serialize, Deserialize, Debug, Clone",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Add new module crates/domain/src/llm.rs. These are the Canonical types from llm-compat-contract.md Section 2.",
+      "dependsOn": ["US-006"]
+    },
+    {
+      "id": "US-008",
+      "title": "LlmClient trait replacing ProviderPort",
+      "description": "As a developer, I want a single LlmClient trait replacing the current ProviderPort so that the interface matches llm-compat-contract.md.",
+      "acceptanceCriteria": [
+        "LlmClient trait with: complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError>",
+        "LlmClient trait with: stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError>",
+        "LlmError enum: Auth, RateLimit, Timeout, Network, InvalidRequest, ProviderError",
+        "LlmClient defined in ports crate, replaces ProviderPort",
+        "All downstream consumers (application, tools, bootstrap) updated to use LlmClient",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Rename/refactor ProviderPort → LlmClient in crates/ports/src/provider.rs. Update all references across application, tools, bootstrap, cli.",
+      "dependsOn": ["US-007"]
+    },
+    {
+      "id": "US-009",
+      "title": "Provider adapter triple conversion",
+      "description": "As a developer, I want provider adapters to convert between Canonical and wire formats so that no provider-specific types leak above the provider crate.",
+      "acceptanceCriteria": [
+        "AnthropicAdapter converts Canonical → Anthropic request and Anthropic → Canonical response",
+        "OpenAiCompatAdapter converts Canonical → OpenAI request and OpenAI → Canonical response",
+        "Tool definition bidirectional conversion (Canonical schema ↔ provider schema)",
+        "Streaming events convert from provider SSE to Canonical StreamEvent",
+        "All adapters implement the new LlmClient trait",
+        "Router implements LlmClient (failover/round-robin logic preserved)",
+        "Upper crates (application, tools) only use Canonical types",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Refactor crates/provider/src/compat/, openai_compat/, anthropic_compat/ to use Canonical types from domain. Update router.rs.",
+      "dependsOn": ["US-008"]
+    },
+    {
+      "id": "US-010",
+      "title": "MCP runtime crate — transport layer",
+      "description": "As a developer, I want a new mcp-runtime crate that handles MCP protocol transport so that the agent can connect to external MCP servers.",
+      "acceptanceCriteria": [
+        "New crates/mcp-runtime added as workspace member",
+        "Stdio transport implemented (spawn child process, stdin/stdout JSON-RPC)",
+        "McpTransport trait with: send(), receive(), close()",
+        "Connection failure returns clear error classification",
+        "Unit tests for message serialization/deserialization",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Create crates/mcp-runtime/. Implement stdio transport first per chicago-mcp-contract.md. SSE transport can come later.",
+      "dependsOn": ["US-009"]
+    },
+    {
+      "id": "US-011",
+      "title": "MCP tool discovery and registration",
+      "description": "As a user, I want the agent to discover tools from MCP servers and make them available for use.",
+      "acceptanceCriteria": [
+        "On startup, read MCP server list from config",
+        "Call tools/list on each server to get tool definitions",
+        "Convert MCP tools to ToolPort interface and register in ToolRegistry",
+        "MCP tool execution forwards via tools/call to the corresponding server",
+        "Server disconnect auto-removes its tools from registry",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Add MCP config section to crates/config. Wire discovery in bootstrap. Create McpToolAdapter implementing ToolPort.",
+      "dependsOn": ["US-010"]
+    },
+    {
+      "id": "US-012",
+      "title": "MCP reserved name and capability policy",
+      "description": "As a developer, I want reserved MCP server names and capability checks enforced per chicago-mcp-contract.md.",
+      "acceptanceCriteria": [
+        "Reserved server names (e.g. 'computer') rejected with policy error",
+        "Privileged adapter (computer-use) requires feature gate to enable",
+        "Tool turn-end cleanup: temporary resources cleaned after each agent turn",
+        "Capability negotiation: only enable capabilities the server declares support for",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Add reserved name list and policy check in mcp-runtime. Wire cleanup hook into agent loop in application crate.",
+      "dependsOn": ["US-011"]
+    },
+    {
+      "id": "US-013",
+      "title": "KAIROS AssistantModeService implementation",
+      "description": "As a developer, I want KAIROS mode resolution and prompt composition so that the agent can operate in different assistant modes.",
+      "acceptanceCriteria": [
+        "AssistantModeService trait implemented in application crate",
+        "resolve_mode(): determines effective mode from config + session state",
+        "build_prompt(): composes system prompt by precedence order",
+        "route_input(): slash command routing (e.g. /brief switches mode)",
+        "Mode switch emits a DomainEvent",
+        "Unit tests for mode resolution logic",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Per kairos-contract.md. Add mode types to domain, service to application. Prompt precedence must be deterministic and testable.",
+      "dependsOn": ["US-009"]
+    },
+    {
+      "id": "US-014",
+      "title": "Mode-aware tool visibility",
+      "description": "As a user, I want tool visibility to change based on the current assistant mode so that irrelevant tools are hidden.",
+      "acceptanceCriteria": [
+        "Each mode defines a tool allowlist",
+        "ToolRegistry supports filtered view by mode",
+        "Brief mode hides high-risk tools",
+        "Mode switch takes effect immediately without restart",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Add definitions_for_mode(mode) method to ToolRegistry. Wire into agent loop's tool list construction.",
+      "dependsOn": ["US-013"]
+    },
+    {
+      "id": "US-015",
+      "title": "ModeCoordinatorService implementation",
+      "description": "As a developer, I want mode coordination logic per coordinator-mode-contract.md so that env mode and session mode are reconciled deterministically.",
+      "acceptanceCriteria": [
+        "ModeCoordinatorService trait implemented",
+        "resolve_effective_mode(): session mode takes precedence over env mode",
+        "reconcile_on_resume(): handles mode conflict when resuming a session",
+        "Mode switch event carries metadata (from, to, reason)",
+        "Invalid transitions return InvalidModeTransition error",
+        "Unit tests for precedence and reconciliation logic",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Per coordinator-mode-contract.md. Implement in application crate. Env var: CLAUDE_CODE_COORDINATOR_MODE.",
+      "dependsOn": ["US-013"]
+    },
+    {
+      "id": "US-016",
+      "title": "TriggerSchedulerService local scheduling",
+      "description": "As a user, I want to schedule durable agent tasks that survive process restart so that I can automate recurring workflows.",
+      "acceptanceCriteria": [
+        "TriggerSchedulerService trait: create, list, delete",
+        "TriggerTask supports SessionOnly and Durable scope",
+        "Durable tasks persist to state-store",
+        "Owner model: MainAgent / Teammate / TeamLead",
+        "Teammate cannot create Durable tasks (returns DurableNotAllowedForTeammate)",
+        "Delete checks owner identity before removing",
+        "Unit tests for ownership and scope rules",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "Per agent-triggers-contract.md. Add trigger types to domain, service to application, storage to session/cron crate.",
+      "dependsOn": ["US-009"]
+    },
+    {
+      "id": "US-017",
+      "title": "RemoteTriggerDispatchService",
+      "description": "As a developer, I want remote trigger dispatch so that scheduled tasks can execute on remote infrastructure.",
+      "acceptanceCriteria": [
+        "RemoteTriggerDispatchService trait: dispatch(payload) -> String",
+        "Feature gate controls availability (gate off returns GateDisabled)",
+        "Requires auth/org context validation",
+        "Transport errors do not leak internal details",
+        "Local scheduling works independently when remote is disabled",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "Per agent-triggers-contract.md. Depends on remote-runtime crate existing. Wire feature gate in config.",
+      "dependsOn": ["US-016", "US-019"]
+    },
+    {
+      "id": "US-018",
+      "title": "Remote runtime crate — RemoteSessionService",
+      "description": "As a developer, I want bridge mode remote session management per bridge-mode-contract.md.",
+      "acceptanceCriteria": [
+        "New crates/remote-runtime added as workspace member",
+        "RemoteSessionService trait: create, fetch, archive, update_title, reconcile_resume",
+        "RemoteSessionState state machine: Pending -> Running -> Idle -> Archived/Expired/Failed",
+        "Forbidden transitions enforced: Archived -> Running, Expired -> Running",
+        "Archive is idempotent (409 treated as success)",
+        "Unit tests for state transitions",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "Per bridge-mode-contract.md. Create crates/remote-runtime/. State types go in domain, service trait in application or ports.",
+      "dependsOn": ["US-009"]
+    },
+    {
+      "id": "US-019",
+      "title": "CcrClient HTTP transport layer",
+      "description": "As a developer, I want an HTTP client for remote session API communication.",
+      "acceptanceCriteria": [
+        "CcrClient trait: HTTP transport for remote session lifecycle",
+        "Session ID prefix translation (session_ vs cse_) handled only in remote-runtime",
+        "Auth token and org context auto-attached to requests",
+        "Timeout and retry configurable via config",
+        "CcrClientError and RemoteSessionError as separate error layers",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "Per bridge-mode-contract.md. Implement in crates/remote-runtime/src/client.rs. Use reqwest.",
+      "dependsOn": ["US-018"]
+    },
+    {
+      "id": "US-020",
+      "title": "UltraplanService state machine",
+      "description": "As a user, I want to launch long-running planning sessions on remote infrastructure with lifecycle management.",
+      "acceptanceCriteria": [
+        "UltraplanService trait: launch, poll, stop, archive_orphan",
+        "8-state machine: Idle -> Launching -> Polling -> AwaitingInput -> Approved -> Completed/Failed",
+        "At most one active ULTRAPLAN per session context",
+        "Launch while already Launching/Polling returns AlreadyActive",
+        "Failure after remote session creation auto-attempts orphan archive",
+        "Stop clears local active marker before returning",
+        "Unit tests for state transitions and guard conditions",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Per ultraplan-contract.md. Implement in application crate, using remote-runtime for transport.",
+      "dependsOn": ["US-019"]
+    },
+    {
+      "id": "US-021",
+      "title": "Platform crate — secure path validation and secret scanning",
+      "description": "As a developer, I want a platform crate for secure path validation and filesystem abstractions needed by TEAMMEM.",
+      "acceptanceCriteria": [
+        "New crates/platform added as workspace member (or integrated into existing crate)",
+        "validate_canonical_path(): rejects '..', symlink escape, paths outside root",
+        "SecretScanner: scans file content for secret patterns",
+        "Scan results include rule_id and label for auditing",
+        "Unit tests for path traversal and symlink attack scenarios",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Per teammem-contract.md. This is a prerequisite for TEAMMEM sync. Keep it focused: path validation + secret scan only.",
+      "dependsOn": ["US-009"]
+    },
+    {
+      "id": "US-022",
+      "title": "TeamMemorySyncService implementation",
+      "description": "As a user, I want to sync team memory with remote storage with security guarantees.",
+      "acceptanceCriteria": [
+        "TeamMemorySyncService trait: pull, push, sync",
+        "Pull -> merge -> push with ETag / 412 conflict retry (bounded)",
+        "All remote writes pass secret scan first",
+        "All local writes pass canonical path validation first",
+        "Path traversal / symlink escape returns PathValidationFailed",
+        "Secret detected skips file with audit metadata",
+        "File over max-size skipped with classification",
+        "Retry exhausted returns ConflictExhausted",
+        "Unit tests for security invariants",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Per teammem-contract.md. Invariant ordering: validate -> scan -> write/push. Implement in application crate, using platform + remote-runtime.",
+      "dependsOn": ["US-021", "US-019"]
+    },
+    {
+      "id": "US-023",
+      "title": "MultiAgentOrchestrator implementation",
+      "description": "As a developer, I want parallel agent orchestration per multi-agent-orchestration-contract.md.",
+      "acceptanceCriteria": [
+        "MultiAgentOrchestrator trait: spawn_parallel, handle_notification, synthesize_summary, stop_task",
+        "WorkerTaskSpec includes criticality (Blocking / Sidecar)",
+        "Parallel fan-out rejects overlapping write scopes",
+        "Worker prompts are self-contained with ownership boundaries",
+        "Coordinator produces synthesized summary (no raw pass-through)",
+        "Stop is idempotent — stopping a terminal-state task does not error",
+        "Unit tests for fan-out policy and synthesis",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Per multi-agent-orchestration-contract.md. Implement in application crate. Uses tokio::spawn for parallel workers.",
+      "dependsOn": ["US-015", "US-009"]
+    },
+    {
+      "id": "US-024",
+      "title": "AgentTool and TaskStopTool integration",
+      "description": "As a user, I want the coordinator agent to spawn and manage worker agents via tools.",
+      "acceptanceCriteria": [
+        "AgentTool supports spawning workers with WorkerTaskSpec",
+        "TaskStopTool supports stopping a running worker",
+        "Worker results reported as WorkerResultNotification",
+        "Notification routing to coordinator's handle_notification",
+        "UI displays worker status (Running / Completed / Failed)",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": "Extend existing crates/tools/src/spawn_agent.rs. Add TaskStopTool. Wire notification routing in bootstrap.",
+      "dependsOn": ["US-023"]
+    },
+    {
+      "id": "US-025",
+      "title": "Cross-feature integration contracts enforcement",
+      "description": "As a developer, I want cross-feature integration contracts enforced per integration-contracts.md.",
+      "acceptanceCriteria": [
+        "Bridge x Ultraplan: remote session APIs only through app-services",
+        "MCP x Tool Runtime: privileged adapter controlled by tool runtime hooks",
+        "TeamMem x KAIROS: memory prompts do not bypass secret/path safety",
+        "Triggers x Remote: local scheduling works when remote is disabled",
+        "Coordinator x Multi-Agent: deterministic fan-out policy",
+        "Unified error envelope: policy / auth / transport / state / validation categories with correlation ID",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Per integration-contracts.md. This is a verification/wiring story — add integration tests that assert boundary rules.",
+      "dependsOn": ["US-012", "US-014", "US-017", "US-020", "US-022", "US-024"]
+    },
+    {
+      "id": "US-026",
+      "title": "Observability baseline",
+      "description": "As an operator, I want structured logging and trace IDs across all runtime crates.",
+      "acceptanceCriteria": [
+        "All async operations have tracing spans",
+        "Correlation ID propagates from CLI entry to provider call",
+        "Error logs include structured context (session_id, provider, tool_name)",
+        "RUST_LOG env var controls log level",
+        "Sensitive data (API keys, tokens) never appears in logs",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Add tracing spans to application, provider, tools, mcp-runtime, remote-runtime. Add correlation ID to AppState or pass via tracing context.",
+      "dependsOn": ["US-012", "US-019"]
+    },
+    {
+      "id": "US-027",
+      "title": "IME correctness for CJK input",
+      "description": "As a user inputting Chinese, I want correct IME handling in the REPL.",
+      "acceptanceCriteria": [
+        "Preedit / commit separation handled correctly",
+        "Grapheme-aware backspace (does not delete half a character)",
+        "Display width cursor alignment (fullwidth chars occupy two columns)",
+        "Pressing Enter during IME composition does not submit incomplete text",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Per acceptance-spec.md IME requirements. May need unicode-width and unicode-segmentation crates. Test with CJK input in REPL.",
+      "dependsOn": ["US-001"]
+    },
+    {
+      "id": "US-028",
+      "title": "Security audit and hardening",
+      "description": "As a developer, I want security controls verified before release.",
+      "acceptanceCriteria": [
+        "cargo audit reports no known vulnerabilities",
+        "Secret scanning covers all TEAMMEM and config paths",
+        "Tool sandbox permissions default to deny (fail-closed)",
+        "Remote endpoints do not leak internal error details",
+        "All feature gates default to off",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "Per acceptance-spec.md security requirements. Run cargo audit, verify deny-by-default in sandbox config, check error messages in remote-runtime.",
+      "dependsOn": ["US-025", "US-026", "US-027"]
+    }
+  ]
+}

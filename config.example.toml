@@ -1,0 +1,97 @@
+# Clawler 設定範例
+# 複製到 ~/.clawler/config.toml 後修改
+#
+# 所有 api_key / base_url / default_model 欄位均可省略，
+# 改用環境變數替代（各欄位旁有標注對應的 env var）。
+
+# ── Routing ────────────────────────────────────────────────────────────────────
+
+[routing]
+# 選擇使用哪個服務商
+# strategy: "manual" | "failover" | "round_robin" | "cost_optimized"
+strategy = "manual"
+
+# 當 strategy = "manual" 時，固定使用此服務商
+# 可選值: "openrouter" | "zhipu" | "anthropic" | "llamacpp"
+default_provider = "openrouter"
+
+# ── Providers ──────────────────────────────────────────────────────────────────
+
+# OpenRouter（預設啟用，可路由到多個模型）
+# env: OPENROUTER_API_KEY / OPENROUTER_BASE_URL / OPENROUTER_DEFAULT_MODEL
+[providers.openrouter]
+api_key      = "sk-or-v1-..."
+default_model = "openai/gpt-4o-mini"
+# base_url   = "https://openrouter.ai/api/v1"   # 通常不需改
+# site_url   = "https://yourapp.com"             # HTTP-Referer header（選填）
+# site_name  = "My App"                          # X-Title header（選填）
+
+# 智谱 AI（z.ai 國際站，OpenAI-compatible）
+# env: ZHIPU_API_KEY / ZHIPU_BASE_URL / ZHIPU_DEFAULT_MODEL
+[providers.zhipu]
+api_key      = "your-zhipu-api-key"
+default_model = "glm-4-plus"
+# base_url   = "https://api.z.ai/api/paas/v4"   # 通常不需改
+# title      = "My App"                          # X-Title header（coding 方案必填）
+
+# Anthropic（原生 Messages API，非 OpenAI-compat）
+# env: ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_DEFAULT_MODEL
+[providers.anthropic]
+api_key      = "sk-ant-api03-..."
+default_model = "claude-opus-4-5"
+# base_url   = "https://api.anthropic.com/v1"    # 通常不需改
+
+# llama.cpp 本地推理伺服器
+# 啟動方式: llama-server -m your-model.gguf --port 8080
+# env: LLAMACPP_API_KEY / LLAMACPP_BASE_URL / LLAMACPP_DEFAULT_MODEL
+[providers.llamacpp]
+# api_key    = ""                                # 通常不需要（部分 auth 設定除外）
+# base_url   = "http://127.0.0.1:8080/v1"        # 通常不需改
+# default_model = "default"                      # llama.cpp 忽略此欄位
+
+# ── Sandbox ────────────────────────────────────────────────────────────────────
+# 控制 agent 可執行哪些本地操作
+
+# [sandbox]
+# cwd      = "~/projects/my-app"   # agent 預設工作目錄（None = 啟動時 cwd）
+# fs_read  = "any"                 # "any" | "cwd" | "none"
+# fs_write = "any"                 # "any" | "cwd" | "none"
+# shell    = "any"                 # "any" | "none" | "git,cargo,ls"（逗號分隔 allowlist）
+# web_fetch = true
+# browser  = true
+
+# ── Memory ─────────────────────────────────────────────────────────────────────
+# Agent 記憶系統設定
+
+[memory]
+# backend: "fts5"（預設，純本地全文索引，不需 embedding）
+#        | "vector"（語意搜尋，需設定 embedding provider）
+backend = "fts5"
+
+# SQLite 資料庫儲存路徑（預設 ~/.clawler/memory.db）
+# db_path = "~/.clawler/memory.db"
+
+# ── Embedding（backend = "vector" 時需設定）───────────────────────────────────
+
+# [memory.embedding]
+# provider = "openai"   # "openai" | "llamacpp" | "zhipu"
+
+# OpenAI embedding（text-embedding-3-small 最具 CP 值）
+# env: OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_EMBEDDING_MODEL
+# [memory.embedding.openai]
+# api_key  = "sk-..."
+# model    = "text-embedding-3-small"   # 或 "text-embedding-3-large"
+# base_url = "https://api.openai.com/v1"
+
+# llama.cpp 本地 embedding（使用 /v1/embeddings，OpenAI-compat）
+# 啟動方式: llama-server -m nomic-embed-text.gguf --port 8080 --embedding
+# env: LLAMACPP_BASE_URL / LLAMACPP_EMBEDDING_MODEL
+# [memory.embedding.llamacpp]
+# base_url = "http://127.0.0.1:8080/v1"
+# model    = "default"
+
+# 智谱 AI embedding
+# env: ZHIPU_API_KEY / ZHIPU_EMBEDDING_MODEL
+# [memory.embedding.zhipu]
+# api_key = "your-zhipu-api-key"
+# model   = "embedding-3"

@@ -1,0 +1,15 @@
+[package]
+name = "ccode-session"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+storage-jsonl = []
+
+[dependencies]
+ccode-domain = { workspace = true }
+ccode-ports  = { workspace = true }
+async-trait   = { workspace = true }
+serde_json    = { workspace = true }
+tokio         = { version = "1", features = ["fs", "io-util"] }
+tracing       = { workspace = true }

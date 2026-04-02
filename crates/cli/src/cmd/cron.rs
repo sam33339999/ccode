@@ -1,6 +1,6 @@
 use ccode_bootstrap::exports::{
-    CompletionRequest, CronJob, CronJobId, CronRepository, Message, ProviderPort, Role,
-    next_run_ms, parse_natural_schedule,
+    CronJob, CronJobId, CronRepository, LlmClient, LlmRequest, Message, Role, next_run_ms,
+    parse_natural_schedule,
 };
 use ccode_bootstrap::wire_from_config;
 use clap::Subcommand;
@@ -75,7 +75,7 @@ async fn list(repo: &dyn CronRepository) -> anyhow::Result<()> {
 
 async fn create(
     repo: &dyn CronRepository,
-    provider: Option<Arc<dyn ProviderPort>>,
+    provider: Option<Arc<dyn LlmClient>>,
     schedule_input: String,
     message: String,
     name: String,
@@ -103,7 +103,7 @@ async fn delete(repo: &dyn CronRepository, id: String) -> anyhow::Result<()> {
 
 async fn run_job(
     repo: &dyn CronRepository,
-    provider: Option<Arc<dyn ProviderPort>>,
+    provider: Option<Arc<dyn LlmClient>>,
     id: String,
 ) -> anyhow::Result<()> {
     let provider =
@@ -114,7 +114,7 @@ async fn run_job(
         .await?
         .ok_or_else(|| anyhow::anyhow!("job not found: {id}"))?;
 
-    let req = CompletionRequest {
+    let req = LlmRequest {
         messages: vec![Message::new(
             "cron-run",
             Role::User,
@@ -141,7 +141,7 @@ async fn run_job(
 }
 
 async fn parse_schedule(
-    provider: Option<&dyn ProviderPort>,
+    provider: Option<&dyn LlmClient>,
     schedule_input: &str,
 ) -> anyhow::Result<String> {
     if next_run_ms(schedule_input).is_some() {

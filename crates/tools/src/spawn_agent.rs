@@ -2,7 +2,7 @@ use crate::ToolRegistry;
 use async_trait::async_trait;
 use ccode_application::commands::agent_run::{AgentRunCommand, ContextPolicy};
 use ccode_ports::{
-    provider::ProviderPort,
+    provider::LlmClient,
     repositories::SessionRepository,
     tool::{ToolContext, ToolPort},
     PortError,
@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 /// be registered before the registry is finalised. Bootstrap sets the cell after
 /// `Arc<ToolRegistry>` is created.
 pub struct SpawnAgentTool {
-    provider: Arc<dyn ProviderPort>,
+    provider: Arc<dyn LlmClient>,
     session_repo: Arc<dyn SessionRepository>,
     /// Filled in by bootstrap after the registry `Arc` is finalized.
     registry_cell: Arc<OnceLock<Arc<ToolRegistry>>>,
@@ -32,7 +32,7 @@ impl SpawnAgentTool {
     /// Create the tool and return a shared cell that bootstrap must fill with
     /// the completed `Arc<ToolRegistry>` before the tool is first called.
     pub fn new(
-        provider: Arc<dyn ProviderPort>,
+        provider: Arc<dyn LlmClient>,
         session_repo: Arc<dyn SessionRepository>,
         context_policy: ContextPolicy,
     ) -> (Self, Arc<OnceLock<Arc<ToolRegistry>>>) {

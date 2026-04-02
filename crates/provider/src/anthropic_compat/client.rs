@@ -1,12 +1,12 @@
 use super::types::*;
 use async_stream::stream;
 use ccode_domain::message::{Role, ToolCall};
-use ccode_ports::{
-    PortError,
-    provider::{CompletionRequest, CompletionResponse, ProviderStream, StreamEvent, TokenUsage},
+use ccode_ports::provider::{
+    LlmError, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
 };
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::time::Duration;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
@@ -54,14 +54,14 @@ impl AnthropicCompatClient {
             .header("anthropic-version", ANTHROPIC_VERSION)
     }
 
-    /// 將 CompletionRequest 的 messages 轉換為 Anthropic 格式。
+    /// 將 LlmRequest 的 messages 轉換為 Anthropic 格式。
     ///
     /// 三種轉換規則：
     /// 1. System → 抽出，合併為頂層 `system` 欄位
     /// 2. Assistant + tool_calls → content 為 block 陣列（text block + tool_use blocks）
     /// 3. Tool（工具結果）→ role="user"，content 為 tool_result block 陣列；
     ///    **連續多個 Tool 訊息必須合併成同一個 user 訊息**（Anthropic 禁止連續同 role）
-    fn split_system(&self, req: &CompletionRequest) -> (Option<String>, Vec<AnthropicMessage>) {
+    fn split_system(&self, req: &LlmRequest) -> (Option<String>, Vec<AnthropicMessage>) {
         use serde_json::{Value, json};
 
         let mut system_parts: Vec<String> = Vec::new();
@@ -155,7 +155,7 @@ impl AnthropicCompatClient {
         (system, messages)
     }
 
-    fn build_body(&self, req: &CompletionRequest, stream: bool) -> AnthropicRequest {
+    fn build_body(&self, req: &LlmRequest, stream: bool) -> AnthropicRequest {
         let model = req
             .model
             .clone()
@@ -181,41 +181,41 @@ impl AnthropicCompatClient {
         }
     }
 
-    pub async fn health_check(&self) -> Result<(), PortError> {
+    pub async fn health_check(&self) -> Result<(), LlmError> {
         let resp = self
             .add_headers(self.client.get(self.models_endpoint()))
             .send()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(map_reqwest_error)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(PortError::Provider(format!(
-                "health check failed: HTTP {}",
-                resp.status()
-            )))
+            Err(LlmError::ProviderError {
+                status: resp.status().as_u16(),
+                message: "health check failed".into(),
+            })
         }
     }
 
-    pub async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, PortError> {
+    pub async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
         let body = self.build_body(&req, false);
         let resp = self
             .add_headers(self.client.post(self.messages_endpoint()).json(&body))
             .send()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(map_reqwest_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(PortError::Provider(format!("HTTP {status}: {text}")));
+            return Err(map_http_status_error(status.as_u16(), text));
         }
 
         let ar: AnthropicResponse = resp
             .json()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
 
         let content = ar
             .content
@@ -225,7 +225,7 @@ impl AnthropicCompatClient {
             .collect::<Vec<_>>()
             .join("");
 
-        Ok(CompletionResponse {
+        Ok(LlmResponse {
             content,
             model: ar.model,
             usage: Some(TokenUsage {
@@ -236,21 +236,18 @@ impl AnthropicCompatClient {
         })
     }
 
-    pub async fn stream_complete(
-        &self,
-        req: CompletionRequest,
-    ) -> Result<ProviderStream, PortError> {
+    pub async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
         let body = self.build_body(&req, true);
         let resp = self
             .add_headers(self.client.post(self.messages_endpoint()).json(&body))
             .send()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(map_reqwest_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(PortError::Provider(format!("HTTP {status}: {text}")));
+            return Err(map_http_status_error(status.as_u16(), text));
         }
 
         let bytes_stream = resp.bytes_stream();
@@ -267,7 +264,7 @@ impl AnthropicCompatClient {
             while let Some(chunk) = bytes_stream.next().await {
                 match chunk {
                     Err(e) => {
-                        yield Err(PortError::Provider(e.to_string()));
+                        yield Err(LlmError::StreamInterrupted(e.to_string()));
                         return;
                     }
                     Ok(bytes) => {
@@ -383,5 +380,24 @@ impl AnthropicCompatClient {
         };
 
         Ok(Box::pin(s))
+    }
+}
+
+fn map_reqwest_error(e: reqwest::Error) -> LlmError {
+    if e.is_timeout() {
+        return LlmError::Timeout(Duration::from_secs(30));
+    }
+    LlmError::Network(e.to_string())
+}
+
+fn map_http_status_error(status: u16, message: String) -> LlmError {
+    match status {
+        401 | 403 => LlmError::AuthError(message),
+        413 => LlmError::RequestTooLarge(message),
+        429 => LlmError::RateLimited {
+            retry_after_ms: None,
+        },
+        404 => LlmError::ModelNotAvailable(message),
+        _ => LlmError::ProviderError { status, message },
     }
 }

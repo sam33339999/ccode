@@ -4,7 +4,7 @@ use ccode_domain::{
     session::{Session, SessionId},
 };
 use ccode_ports::{
-    provider::{CompletionRequest, ProviderPort, ProviderStream, StreamEvent, ToolDefinition},
+    provider::{LlmClient, LlmRequest, LlmStream, StreamEvent, ToolDefinition},
     repositories::SessionRepository,
 };
 use futures::StreamExt;
@@ -41,7 +41,7 @@ impl Default for ContextPolicy {
 
 pub struct AgentRunCommand<R> {
     repo: R,
-    provider: Arc<dyn ProviderPort>,
+    provider: Arc<dyn LlmClient>,
     context: ContextPolicy,
 }
 
@@ -50,7 +50,7 @@ type ExecuteToolFn = dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Out
     + Sync;
 
 impl<R: SessionRepository> AgentRunCommand<R> {
-    pub fn new(repo: R, provider: Arc<dyn ProviderPort>) -> Self {
+    pub fn new(repo: R, provider: Arc<dyn LlmClient>) -> Self {
         Self {
             repo,
             provider,
@@ -114,7 +114,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                 self.repo.save(&session).await?;
             }
 
-            let req = CompletionRequest {
+            let req = LlmRequest {
                 messages: session.messages.clone(),
                 model: None,
                 max_tokens: None,
@@ -122,7 +122,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                 tools: tools.clone(),
             };
 
-            let mut stream = self.provider.stream_complete(req).await?;
+            let mut stream = self.provider.stream(req).await?;
 
             let mut assistant_content = String::new();
             let mut captured_tool_calls: Vec<ccode_domain::message::ToolCall> = Vec::new();
@@ -206,7 +206,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         &self,
         session_id: Option<String>,
         user_content: String,
-    ) -> Result<(SessionId, ProviderStream), AppError> {
+    ) -> Result<(SessionId, LlmStream), AppError> {
         let now = now_ms();
 
         let mut session = match session_id {
@@ -224,7 +224,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         session.add_message(Message::new(msg_id, Role::User, user_content, now), now);
         self.repo.save(&session).await?;
 
-        let req = CompletionRequest {
+        let req = LlmRequest {
             messages: session.messages.clone(),
             model: None,
             max_tokens: None,
@@ -232,7 +232,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
             tools: Vec::new(),
         };
 
-        let stream = self.provider.stream_complete(req).await?;
+        let stream = self.provider.stream(req).await?;
         Ok((session.id, stream))
     }
 
@@ -263,7 +263,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
 /// system-level summary message, replacing the old messages in the session.
 async fn compress_context(
     mut session: Session,
-    provider: &dyn ProviderPort,
+    provider: &dyn LlmClient,
     keep_recent: usize,
 ) -> Result<Session, AppError> {
     let total = session.messages.len();
@@ -295,7 +295,7 @@ async fn compress_context(
          Do not include meta-commentary about the summary itself.\n\n{transcript}"
     );
 
-    let req = CompletionRequest {
+    let req = LlmRequest {
         messages: vec![Message::new(
             "compress-req",
             Role::User,

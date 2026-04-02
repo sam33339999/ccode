@@ -1,12 +1,12 @@
 use super::types::*;
 use async_stream::stream;
 use ccode_domain::message::{Role, ToolCall};
-use ccode_ports::{
-    PortError,
-    provider::{CompletionRequest, CompletionResponse, ProviderStream, StreamEvent, TokenUsage},
+use ccode_ports::provider::{
+    LlmError, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
 };
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Shared HTTP client for OpenAI-compatible APIs.
 ///
@@ -39,7 +39,7 @@ impl OpenAiCompatClient {
         format!("{}/chat/completions", self.base_url)
     }
 
-    fn build_body(&self, req: &CompletionRequest, stream: bool) -> ChatRequest {
+    fn build_body(&self, req: &LlmRequest, stream: bool) -> ChatRequest {
         let model = req
             .model
             .clone()
@@ -128,42 +128,42 @@ impl OpenAiCompatClient {
         b
     }
 
-    pub async fn health_check(&self) -> Result<(), PortError> {
+    pub async fn health_check(&self) -> Result<(), LlmError> {
         let url = format!("{}/models", self.base_url);
         let resp = self
             .add_headers(self.client.get(&url))
             .send()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(map_reqwest_error)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(PortError::Provider(format!(
-                "health check failed: HTTP {}",
-                resp.status()
-            )))
+            Err(LlmError::ProviderError {
+                status: resp.status().as_u16(),
+                message: "health check failed".into(),
+            })
         }
     }
 
-    pub async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, PortError> {
+    pub async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
         let body = self.build_body(&req, false);
         let resp = self
             .add_headers(self.client.post(self.endpoint()).json(&body))
             .send()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(map_reqwest_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(PortError::Provider(format!("HTTP {status}: {text}")));
+            return Err(map_http_status_error(status.as_u16(), text));
         }
 
         let chat: ChatResponse = resp
             .json()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
 
         let content = chat
             .choices
@@ -173,17 +173,14 @@ impl OpenAiCompatClient {
             .and_then(|m| m.content)
             .unwrap_or_default();
 
-        Ok(CompletionResponse {
+        Ok(LlmResponse {
             content,
             model: chat.model,
             usage: chat.usage.map(map_usage),
         })
     }
 
-    pub async fn stream_complete(
-        &self,
-        req: CompletionRequest,
-    ) -> Result<ProviderStream, PortError> {
+    pub async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
         let body = self.build_body(&req, true);
 
         // debug: 印出送出的完整 request body（RUST_LOG=debug 時可見）
@@ -197,12 +194,12 @@ impl OpenAiCompatClient {
             .add_headers(self.client.post(self.endpoint()).json(&body))
             .send()
             .await
-            .map_err(|e| PortError::Provider(e.to_string()))?;
+            .map_err(map_reqwest_error)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(PortError::Provider(format!("HTTP {status}: {text}")));
+            return Err(map_http_status_error(status.as_u16(), text));
         }
 
         let bytes_stream = resp.bytes_stream();
@@ -216,7 +213,7 @@ impl OpenAiCompatClient {
             while let Some(chunk) = bytes_stream.next().await {
                 match chunk {
                     Err(e) => {
-                        yield Err(PortError::Provider(e.to_string()));
+                        yield Err(LlmError::StreamInterrupted(e.to_string()));
                         return;
                     }
                     Ok(bytes) => {
@@ -325,6 +322,25 @@ impl OpenAiCompatClient {
         };
 
         Ok(Box::pin(s))
+    }
+}
+
+fn map_reqwest_error(e: reqwest::Error) -> LlmError {
+    if e.is_timeout() {
+        return LlmError::Timeout(Duration::from_secs(30));
+    }
+    LlmError::Network(e.to_string())
+}
+
+fn map_http_status_error(status: u16, message: String) -> LlmError {
+    match status {
+        401 | 403 => LlmError::AuthError(message),
+        413 => LlmError::RequestTooLarge(message),
+        429 => LlmError::RateLimited {
+            retry_after_ms: None,
+        },
+        404 => LlmError::ModelNotAvailable(message),
+        _ => LlmError::ProviderError { status, message },
     }
 }
 

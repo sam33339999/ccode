@@ -1,9 +1,6 @@
 use crate::openai_compat::OpenAiCompatClient;
 use async_trait::async_trait;
-use ccode_ports::{
-    PortError,
-    provider::{CompletionRequest, CompletionResponse, ProviderPort, ProviderStream},
-};
+use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
 
 pub struct LlamaCppAdapter {
     client: OpenAiCompatClient,
@@ -22,7 +19,7 @@ impl LlamaCppAdapter {
 }
 
 #[async_trait]
-impl ProviderPort for LlamaCppAdapter {
+impl LlmClient for LlamaCppAdapter {
     fn name(&self) -> &str {
         "llamacpp"
     }
@@ -31,15 +28,15 @@ impl ProviderPort for LlamaCppAdapter {
         &self.client.default_model
     }
 
-    async fn health_check(&self) -> Result<(), PortError> {
+    async fn health_check(&self) -> Result<(), LlmError> {
         self.client.health_check().await
     }
 
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, PortError> {
+    async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
         self.client.complete(req).await
     }
 
-    async fn stream_complete(&self, req: CompletionRequest) -> Result<ProviderStream, PortError> {
-        self.client.stream_complete(req).await
+    async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
+        self.client.stream(req).await
     }
 }

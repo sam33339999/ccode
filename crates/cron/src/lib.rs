@@ -6,7 +6,7 @@ use ccode_domain::{
 use ccode_ports::{
     PortError,
     cron::CronRepository,
-    provider::{CompletionRequest, ProviderPort},
+    provider::{LlmClient, LlmRequest},
 };
 use chrono::Utc;
 use std::path::PathBuf;
@@ -96,7 +96,7 @@ impl CronRepository for FileCronRepo {
 /// Ask the LLM to convert a natural-language schedule description into a
 /// 5-field cron expression.  Returns the validated cron string.
 pub async fn parse_natural_schedule(
-    provider: &dyn ProviderPort,
+    provider: &dyn LlmClient,
     description: &str,
 ) -> Result<String, String> {
     let now = std::time::SystemTime::now()
@@ -114,7 +114,7 @@ pub async fn parse_natural_schedule(
          Schedule: {description}"
     );
 
-    let req = CompletionRequest {
+    let req = LlmRequest {
         messages: vec![Message::new("q", Role::User, prompt, now)],
         model: None,
         max_tokens: Some(32),

@@ -323,6 +323,7 @@ fn classify_app_error(error: &AppError, ctx: &ErrorContext) -> ErrorEnvelope {
             }
             classify_message_into_envelope(&text, ctx)
         }
+        AppError::Llm(llm_error) => classify_message_into_envelope(&llm_error.to_string(), ctx),
         AppError::Domain(domain_error) => {
             classify_message_into_envelope(&domain_error.to_string(), ctx)
         }

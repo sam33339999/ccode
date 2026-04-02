@@ -1,8 +1,5 @@
 use async_trait::async_trait;
-use ccode_ports::{
-    PortError,
-    provider::{CompletionRequest, CompletionResponse, ProviderPort, ProviderStream},
-};
+use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -29,13 +26,13 @@ impl RoutingStrategy {
 }
 
 pub struct ProviderRouter {
-    providers: Vec<Arc<dyn ProviderPort>>,
+    providers: Vec<Arc<dyn LlmClient>>,
     strategy: RoutingStrategy,
     rr_cursor: AtomicUsize,
 }
 
 impl ProviderRouter {
-    pub fn new(providers: Vec<Arc<dyn ProviderPort>>, strategy: RoutingStrategy) -> Self {
+    pub fn new(providers: Vec<Arc<dyn LlmClient>>, strategy: RoutingStrategy) -> Self {
         Self {
             providers,
             strategy,
@@ -43,7 +40,7 @@ impl ProviderRouter {
         }
     }
 
-    fn pick_primary(&self) -> Option<&Arc<dyn ProviderPort>> {
+    fn pick_primary(&self) -> Option<&Arc<dyn LlmClient>> {
         match self.strategy {
             RoutingStrategy::RoundRobin => {
                 if self.providers.is_empty() {
@@ -58,7 +55,7 @@ impl ProviderRouter {
 }
 
 #[async_trait]
-impl ProviderPort for ProviderRouter {
+impl LlmClient for ProviderRouter {
     fn name(&self) -> &str {
         "router"
     }
@@ -70,17 +67,17 @@ impl ProviderPort for ProviderRouter {
             .unwrap_or("")
     }
 
-    async fn health_check(&self) -> Result<(), PortError> {
+    async fn health_check(&self) -> Result<(), LlmError> {
         self.pick_primary()
-            .ok_or_else(|| PortError::Provider("no providers configured".into()))?
+            .ok_or_else(|| LlmError::Network("no providers configured".into()))?
             .health_check()
             .await
     }
 
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, PortError> {
+    async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
         match self.strategy {
             RoutingStrategy::Failover => {
-                let mut last_err = PortError::Provider("no providers".into());
+                let mut last_err = LlmError::Network("no providers".into());
                 for p in &self.providers {
                     match p.complete(req.clone()).await {
                         Ok(r) => return Ok(r),
@@ -94,19 +91,19 @@ impl ProviderPort for ProviderRouter {
             }
             _ => {
                 self.pick_primary()
-                    .ok_or_else(|| PortError::Provider("no providers configured".into()))?
+                    .ok_or_else(|| LlmError::Network("no providers configured".into()))?
                     .complete(req)
                     .await
             }
         }
     }
 
-    async fn stream_complete(&self, req: CompletionRequest) -> Result<ProviderStream, PortError> {
+    async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
         match self.strategy {
             RoutingStrategy::Failover => {
-                let mut last_err = PortError::Provider("no providers".into());
+                let mut last_err = LlmError::Network("no providers".into());
                 for p in &self.providers {
-                    match p.stream_complete(req.clone()).await {
+                    match p.stream(req.clone()).await {
                         Ok(s) => return Ok(s),
                         Err(e) => {
                             tracing::warn!("[router] provider {} failed: {e}", p.name());
@@ -118,8 +115,8 @@ impl ProviderPort for ProviderRouter {
             }
             _ => {
                 self.pick_primary()
-                    .ok_or_else(|| PortError::Provider("no providers configured".into()))?
-                    .stream_complete(req)
+                    .ok_or_else(|| LlmError::Network("no providers configured".into()))?
+                    .stream(req)
                     .await
             }
         }

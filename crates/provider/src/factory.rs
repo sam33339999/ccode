@@ -1,5 +1,5 @@
 use ccode_config::schema::Config;
-use ccode_ports::provider::ProviderPort;
+use ccode_ports::provider::LlmClient;
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -12,7 +12,7 @@ pub enum FactoryError {
 
 /// Build a provider adapter from config.
 /// `name` must match a key in `config.providers` (e.g. `"openrouter"`).
-pub fn build(name: &str, config: &Config) -> Result<Arc<dyn ProviderPort>, FactoryError> {
+pub fn build(name: &str, config: &Config) -> Result<Arc<dyn LlmClient>, FactoryError> {
     match name {
         #[cfg(feature = "provider-openrouter")]
         "openrouter" => {
@@ -90,7 +90,7 @@ pub fn build(name: &str, config: &Config) -> Result<Arc<dyn ProviderPort>, Facto
 /// - `manual`      → single provider named by `routing.default_provider`
 /// - `failover`    → all configured providers in config order, try each on error
 /// - `round_robin` → all configured providers, rotated per request
-pub fn build_default(config: &Config) -> Result<Arc<dyn ProviderPort>, FactoryError> {
+pub fn build_default(config: &Config) -> Result<Arc<dyn LlmClient>, FactoryError> {
     use crate::router::{ProviderRouter, RoutingStrategy};
 
     let strategy = RoutingStrategy::from_config_value(&config.routing.strategy);
@@ -106,7 +106,7 @@ pub fn build_default(config: &Config) -> Result<Arc<dyn ProviderPort>, FactoryEr
 
     // Build all providers that are configured
     let candidates = ["openrouter", "anthropic", "zhipu", "llamacpp"];
-    let mut providers: Vec<Arc<dyn ProviderPort>> = Vec::new();
+    let mut providers: Vec<Arc<dyn LlmClient>> = Vec::new();
 
     // Put default_provider first if specified
     if let Some(default) = config.routing.default_provider.as_deref()

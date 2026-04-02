@@ -1,7 +1,7 @@
 use ccode_application::commands::agent_run::ContextPolicy;
 use ccode_ports::{
     cron::CronRepository,
-    provider::ProviderPort,
+    provider::LlmClient,
     repositories::SessionRepository,
     tool::{FsPolicy, Permission, ShellPolicy, ToolContext},
 };
@@ -21,7 +21,7 @@ pub mod exports {
     pub use ccode_domain::message::{Message, Role};
     pub use ccode_ports::{
         cron::CronRepository,
-        provider::{CompletionRequest, ProviderPort},
+        provider::{LlmClient, LlmRequest},
     };
 }
 
@@ -29,7 +29,7 @@ pub mod exports {
 pub struct AppState {
     pub session_repo: Arc<dyn SessionRepository>,
     pub cron_repo: Arc<dyn CronRepository>,
-    pub provider: Option<Arc<dyn ProviderPort>>,
+    pub provider: Option<Arc<dyn LlmClient>>,
     pub tool_registry: Arc<ToolRegistry>,
     pub permission: Permission,
     pub cwd: PathBuf,
@@ -55,7 +55,7 @@ impl AppState {
 pub fn build_tool_registry(
     _cwd: PathBuf,
     cron_repo: Option<Arc<dyn ccode_ports::cron::CronRepository>>,
-    provider: Option<Arc<dyn ccode_ports::provider::ProviderPort>>,
+    provider: Option<Arc<dyn ccode_ports::provider::LlmClient>>,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(FsReadTool));
@@ -99,7 +99,7 @@ pub fn wire_dev() -> AppState {
 /// tool now visible inside via the `OnceLock`).
 fn wire_spawn_agent(
     registry: Arc<ToolRegistry>,
-    provider: Arc<dyn ProviderPort>,
+    provider: Arc<dyn LlmClient>,
     session_repo: Arc<dyn SessionRepository>,
     context_policy: ContextPolicy,
 ) -> Arc<ToolRegistry> {

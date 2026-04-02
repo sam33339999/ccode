@@ -1,8 +1,8 @@
-use crate::PortError;
 use async_trait::async_trait;
 use ccode_domain::message::Message;
 use futures_core::Stream;
 use std::pin::Pin;
+use std::time::Duration;
 
 // ── Tool definitions ───────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ pub struct ToolDefinition {
 // ── Request / Response types ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub struct CompletionRequest {
+pub struct LlmRequest {
     pub messages: Vec<Message>,
     pub model: Option<String>, // None → use provider's default_model
     pub max_tokens: Option<u32>,
@@ -25,7 +25,7 @@ pub struct CompletionRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct CompletionResponse {
+pub struct LlmResponse {
     pub content: String,
     pub model: String,
     pub usage: Option<TokenUsage>,
@@ -50,12 +50,34 @@ pub enum StreamEvent {
     Done { usage: Option<TokenUsage> },
 }
 
-pub type ProviderStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, PortError>> + Send>>;
+pub type LlmStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum LlmError {
+    #[error("authentication failed: {0}")]
+    AuthError(String),
+    #[error("rate limited")]
+    RateLimited { retry_after_ms: Option<u64> },
+    #[error("model not available: {0}")]
+    ModelNotAvailable(String),
+    #[error("request too large: {0}")]
+    RequestTooLarge(String),
+    #[error("provider returned invalid response: {0}")]
+    InvalidResponse(String),
+    #[error("stream interrupted: {0}")]
+    StreamInterrupted(String),
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("timeout after {0:?}")]
+    Timeout(Duration),
+    #[error("provider error ({status}): {message}")]
+    ProviderError { status: u16, message: String },
+}
 
 // ── Provider port trait ────────────────────────────────────────────────────────
 
 #[async_trait]
-pub trait ProviderPort: Send + Sync {
+pub trait LlmClient: Send + Sync {
     /// Provider identifier used in routing and logging.
     fn name(&self) -> &str;
 
@@ -63,11 +85,11 @@ pub trait ProviderPort: Send + Sync {
     fn default_model(&self) -> &str;
 
     /// Liveness check.
-    async fn health_check(&self) -> Result<(), PortError>;
+    async fn health_check(&self) -> Result<(), LlmError>;
 
     /// Single-shot completion (waits for full response).
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, PortError>;
+    async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError>;
 
     /// Streaming completion — returns a stream of incremental events.
-    async fn stream_complete(&self, req: CompletionRequest) -> Result<ProviderStream, PortError>;
+    async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError>;
 }

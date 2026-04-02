@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use ccode_domain::cron::CronJob;
 use ccode_ports::{
     cron::CronRepository,
-    provider::ProviderPort,
+    provider::LlmClient,
     tool::{ToolContext, ToolPort},
     PortError,
 };
@@ -12,11 +12,11 @@ use std::sync::Arc;
 /// Tool that lets the agent schedule a future task by creating a cron job.
 pub struct CronCreateTool {
     pub cron_repo: Arc<dyn CronRepository>,
-    pub provider: Arc<dyn ProviderPort>,
+    pub provider: Arc<dyn LlmClient>,
 }
 
 impl CronCreateTool {
-    pub fn new(cron_repo: Arc<dyn CronRepository>, provider: Arc<dyn ProviderPort>) -> Self {
+    pub fn new(cron_repo: Arc<dyn CronRepository>, provider: Arc<dyn LlmClient>) -> Self {
         Self {
             cron_repo,
             provider,
@@ -97,18 +97,18 @@ impl ToolPort for CronCreateTool {
 // ── Helpers (duplicated from ccode-cron to avoid circular dep) ───────────────
 
 async fn parse_natural_schedule(
-    provider: &dyn ProviderPort,
+    provider: &dyn LlmClient,
     description: &str,
 ) -> Result<String, String> {
     use ccode_domain::message::{Message, Role};
-    use ccode_ports::provider::CompletionRequest;
+    use ccode_ports::provider::LlmRequest;
 
     let prompt = format!(
         "Convert to a 5-field cron expression (MIN HOUR DOM MONTH DOW).\n\
          Reply with ONLY the expression, nothing else.\n\n\
          Schedule: {description}"
     );
-    let req = CompletionRequest {
+    let req = LlmRequest {
         messages: vec![Message::new("q", Role::User, prompt, now_ms())],
         model: None,
         max_tokens: Some(32),

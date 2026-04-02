@@ -84,7 +84,7 @@ const CONTRACT_RULES: &[ContractRule] = &[
         doc: "llm-compat-contract.md",
         required_traits: &["LlmClient"],
         required_errors: &["LlmError"],
-        allowed_trait_crates: &["crates/provider/"],
+        allowed_trait_crates: &["crates/ports/"],
         requires_cli_or_security_matrix: false,
     },
     // Cross-spec orchestration contract is also enforced for consistency checks.

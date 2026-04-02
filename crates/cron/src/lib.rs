@@ -1,16 +1,16 @@
-use std::path::PathBuf;
-use std::str::FromStr;
 use async_trait::async_trait;
-use chrono::Utc;
 use ccode_domain::{
     cron::{CronJob, CronJobId},
     message::{Message, Role},
 };
 use ccode_ports::{
+    PortError,
     cron::CronRepository,
     provider::{CompletionRequest, ProviderPort},
-    PortError,
 };
+use chrono::Utc;
+use std::path::PathBuf;
+use std::str::FromStr;
 
 pub struct FileCronRepo {
     dir: PathBuf,
@@ -61,8 +61,8 @@ impl CronRepository for FileCronRepo {
         let path = self.path_for(id);
         match tokio::fs::read(&path).await {
             Ok(data) => {
-                let job = serde_json::from_slice(&data)
-                    .map_err(|e| PortError::Storage(e.to_string()))?;
+                let job =
+                    serde_json::from_slice(&data).map_err(|e| PortError::Storage(e.to_string()))?;
                 Ok(Some(job))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -73,8 +73,7 @@ impl CronRepository for FileCronRepo {
     async fn save(&self, job: &CronJob) -> Result<(), PortError> {
         let path = self.path_for(&job.id);
         let tmp = path.with_extension("json.tmp");
-        let data = serde_json::to_vec_pretty(job)
-            .map_err(|e| PortError::Storage(e.to_string()))?;
+        let data = serde_json::to_vec_pretty(job).map_err(|e| PortError::Storage(e.to_string()))?;
         tokio::fs::write(&tmp, &data)
             .await
             .map_err(|e| PortError::Storage(e.to_string()))?;

@@ -1,8 +1,8 @@
+use ccode_application::commands::agent_run::AgentRunCommand;
+use clap::Args;
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use clap::Args;
-use ccode_application::commands::agent_run::AgentRunCommand;
 
 #[derive(Args)]
 pub struct AgentArgs {
@@ -21,13 +21,12 @@ pub struct AgentArgs {
 }
 
 pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
-    let state = ccode_bootstrap::wire_from_config_with_cwd(
-        std::env::current_dir().ok(),
-    )
-    .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
+    let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok())
+        .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
 
     let provider = state
-        .provider.clone()
+        .provider
+        .clone()
         .ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set OPENROUTER_API_KEY"))?;
 
     eprintln!(
@@ -40,10 +39,16 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
     let tool_definitions = state.tool_registry.definitions();
     let registry = Arc::clone(&state.tool_registry);
 
-    eprintln!("[tools: {}]", tool_definitions.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "));
+    eprintln!(
+        "[tools: {}]",
+        tool_definitions
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
-    let cmd = AgentRunCommand::new(state.session_repo, provider)
-        .with_context(state.context_policy);
+    let cmd = AgentRunCommand::new(state.session_repo, provider).with_context(state.context_policy);
 
     // Track which tools the user has permanently allowed
     let always_allowed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -58,7 +63,11 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
     let always_allowed_clone = always_allowed.clone();
     let tool_ctx = Arc::new(tool_ctx);
 
-    let execute_tool = move |name: String, args: serde_json::Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> {
+    let execute_tool = move |name: String,
+                             args: serde_json::Value|
+          -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+    > {
         let registry = registry.clone();
         let always_allowed = always_allowed_clone.clone();
         let tool_ctx = tool_ctx.clone();

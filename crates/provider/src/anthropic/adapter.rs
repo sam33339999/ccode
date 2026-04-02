@@ -1,9 +1,9 @@
+use crate::anthropic_compat::AnthropicCompatClient;
 use async_trait::async_trait;
 use ccode_ports::{
     PortError,
     provider::{CompletionRequest, CompletionResponse, ProviderPort, ProviderStream},
 };
-use crate::anthropic_compat::AnthropicCompatClient;
 
 pub struct AnthropicAdapter {
     client: AnthropicCompatClient,

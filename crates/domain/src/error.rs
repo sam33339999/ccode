@@ -1,5 +1,5 @@
-use thiserror::Error;
 use crate::session::SessionId;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum DomainError {

@@ -1,29 +1,34 @@
-use std::sync::Arc;
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use ccode_domain::cron::CronJob;
 use ccode_ports::{
     cron::CronRepository,
     provider::ProviderPort,
-    PortError,
     tool::{ToolContext, ToolPort},
+    PortError,
 };
+use serde_json::{json, Value};
+use std::sync::Arc;
 
 /// Tool that lets the agent schedule a future task by creating a cron job.
 pub struct CronCreateTool {
     pub cron_repo: Arc<dyn CronRepository>,
-    pub provider:  Arc<dyn ProviderPort>,
+    pub provider: Arc<dyn ProviderPort>,
 }
 
 impl CronCreateTool {
     pub fn new(cron_repo: Arc<dyn CronRepository>, provider: Arc<dyn ProviderPort>) -> Self {
-        Self { cron_repo, provider }
+        Self {
+            cron_repo,
+            provider,
+        }
     }
 }
 
 #[async_trait]
 impl ToolPort for CronCreateTool {
-    fn name(&self) -> &str { "cron_create" }
+    fn name(&self) -> &str {
+        "cron_create"
+    }
 
     fn description(&self) -> &str {
         "Schedule a future agent task. Provide a natural-language 'when' description \
@@ -44,13 +49,16 @@ impl ToolPort for CronCreateTool {
     }
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<String, PortError> {
-        let when = args["when"].as_str()
+        let when = args["when"]
+            .as_str()
             .ok_or_else(|| PortError::Tool("missing: when".into()))?
             .to_string();
-        let message = args["message"].as_str()
+        let message = args["message"]
+            .as_str()
             .ok_or_else(|| PortError::Tool("missing: message".into()))?
             .to_string();
-        let name = args["name"].as_str()
+        let name = args["name"]
+            .as_str()
             .unwrap_or("agent-scheduled")
             .to_string();
 
@@ -60,24 +68,38 @@ impl ToolPort for CronCreateTool {
 
         let now = now_ms();
         let job_id = format!("cron-{now}");
-        let mut job = CronJob::new(job_id.clone(), name, when.clone(), schedule.clone(), message, now);
+        let mut job = CronJob::new(
+            job_id.clone(),
+            name,
+            when.clone(),
+            schedule.clone(),
+            message,
+            now,
+        );
         job.next_run_at = next_run_ms(&schedule);
 
         self.cron_repo.save(&job).await?;
 
-        let next = job.next_run_at.map(ms_to_rfc3339).unwrap_or_else(|| "unknown".into());
+        let next = job
+            .next_run_at
+            .map(ms_to_rfc3339)
+            .unwrap_or_else(|| "unknown".into());
 
         Ok(json!({
             "job_id": job_id,
             "schedule": schedule,
             "next_run": next,
-        }).to_string())
+        })
+        .to_string())
     }
 }
 
 // ── Helpers (duplicated from ccode-cron to avoid circular dep) ───────────────
 
-async fn parse_natural_schedule(provider: &dyn ProviderPort, description: &str) -> Result<String, String> {
+async fn parse_natural_schedule(
+    provider: &dyn ProviderPort,
+    description: &str,
+) -> Result<String, String> {
     use ccode_domain::message::{Message, Role};
     use ccode_ports::provider::CompletionRequest;
 
@@ -107,12 +129,14 @@ fn validate_cron(s: &str) -> Result<(), String> {
         6 => format!("{} *", s),
         _ => s.to_string(),
     };
-    cron::Schedule::from_str(&normalized).map(|_| ()).map_err(|e| e.to_string())
+    cron::Schedule::from_str(&normalized)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn next_run_ms(schedule: &str) -> Option<u64> {
-    use std::str::FromStr;
     use chrono::Utc;
+    use std::str::FromStr;
     let fields: Vec<&str> = schedule.split_whitespace().collect();
     let normalized = match fields.len() {
         5 => format!("0 {} *", fields.join(" ")),

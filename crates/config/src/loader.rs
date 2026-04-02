@@ -1,5 +1,5 @@
-use std::path::Path;
 use crate::{error::ConfigError, schema::Config};
+use std::path::Path;
 
 /// Load config from the default location (`~/.ccode/config.toml`).
 /// Missing file is not an error — returns `Config::default()`.
@@ -44,7 +44,10 @@ default_model = "anthropic/claude-3-5-sonnet"
         let cfg = load_from(f.path()).unwrap();
         let or = cfg.providers.openrouter.unwrap();
         assert_eq!(or.api_key.as_deref(), Some("sk-or-test"));
-        assert_eq!(or.default_model.as_deref(), Some("anthropic/claude-3-5-sonnet"));
+        assert_eq!(
+            or.default_model.as_deref(),
+            Some("anthropic/claude-3-5-sonnet")
+        );
     }
 
     #[test]

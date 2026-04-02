@@ -1,0 +1,1 @@
+//! MCP runtime crate placeholder.

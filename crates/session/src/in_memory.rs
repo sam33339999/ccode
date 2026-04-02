@@ -1,8 +1,9 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
 use async_trait::async_trait;
 use ccode_domain::session::{Session, SessionId, SessionSummary};
 use ccode_ports::{PortError, repositories::SessionRepository};
+use std::cmp::Reverse;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct InMemorySessionRepo {
@@ -21,7 +22,7 @@ impl SessionRepository for InMemorySessionRepo {
         let sessions = self.sessions.lock().unwrap();
         let mut summaries: Vec<SessionSummary> =
             sessions.values().map(SessionSummary::from).collect();
-        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        summaries.sort_by_key(|s| Reverse(s.updated_at));
         summaries.truncate(limit);
         Ok(summaries)
     }

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use ccode_ports::{
-    PortError,
     tool::{ToolContext, ToolPort},
+    PortError,
 };
+use serde_json::{json, Value};
 
 pub struct FsListTool;
 
@@ -42,19 +42,13 @@ impl ToolPort for FsListTool {
 
         let mut output = format!("{}\n", resolved.display());
 
-        build_tree(&resolved, &resolved, depth, 0, &mut output);
+        build_tree(&resolved, depth, 0, &mut output);
 
         Ok(output)
     }
 }
 
-fn build_tree(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    max_depth: usize,
-    current_depth: usize,
-    output: &mut String,
-) {
+fn build_tree(dir: &std::path::Path, max_depth: usize, current_depth: usize, output: &mut String) {
     if current_depth >= max_depth {
         return;
     }
@@ -82,7 +76,7 @@ fn build_tree(
         if entry_path.is_dir() {
             output.push_str(&format!("{}{}/\n", indent, name));
             if current_depth + 1 < max_depth {
-                build_tree(root, entry_path, max_depth, current_depth + 1, output);
+                build_tree(entry_path, max_depth, current_depth + 1, output);
             }
         } else {
             output.push_str(&format!("{}{}\n", indent, name));

@@ -1,4 +1,4 @@
-mod types;
 mod client;
+mod types;
 
 pub use client::OpenAiCompatClient;

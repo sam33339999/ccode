@@ -1,6 +1,6 @@
+use crate::PortError;
 use async_trait::async_trait;
 use std::sync::Arc;
-use crate::PortError;
 
 #[async_trait]
 pub trait EmbeddingPort: Send + Sync {
@@ -13,7 +13,13 @@ pub trait EmbeddingPort: Send + Sync {
 
 #[async_trait]
 impl<T: EmbeddingPort + ?Sized> EmbeddingPort for Arc<T> {
-    fn name(&self) -> &str { (**self).name() }
-    async fn embed(&self, text: &str) -> Result<Vec<f32>, PortError> { (**self).embed(text).await }
-    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, PortError> { (**self).embed_batch(texts).await }
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, PortError> {
+        (**self).embed(text).await
+    }
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, PortError> {
+        (**self).embed_batch(texts).await
+    }
 }

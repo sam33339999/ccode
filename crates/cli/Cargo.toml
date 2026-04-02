@@ -10,9 +10,6 @@ path = "src/main.rs"
 [dependencies]
 ccode-application = { workspace = true }
 ccode-bootstrap   = { path = "../bootstrap" }
-ccode-cron        = { path = "../cron" }
-ccode-domain      = { workspace = true }
-ccode-ports       = { workspace = true }
 chrono             = { workspace = true }
 clap               = { workspace = true }
 anyhow             = { workspace = true }

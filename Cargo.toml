@@ -5,9 +5,13 @@ members = [
     "crates/config",
     "crates/application",
     "crates/provider",
+    "crates/mcp-runtime",
+    "crates/remote-runtime",
+    "crates/platform",
     "crates/session",
     "crates/tools",
     "crates/cron",
+    "crates/state-store",
     "crates/bootstrap",
     "crates/cli",
 ]

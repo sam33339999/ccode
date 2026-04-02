@@ -1,6 +1,6 @@
+use crate::error::AppError;
 use ccode_domain::session::SessionSummary;
 use ccode_ports::repositories::SessionRepository;
-use crate::error::AppError;
 
 pub struct SessionsListQuery<R> {
     repo: R,
@@ -59,14 +59,21 @@ mod tests {
 
     #[tokio::test]
     async fn respects_limit() {
-        let repo = MockRepo(vec![make_summary("s1"), make_summary("s2"), make_summary("s3")]);
+        let repo = MockRepo(vec![
+            make_summary("s1"),
+            make_summary("s2"),
+            make_summary("s3"),
+        ]);
         let result = SessionsListQuery::new(repo).execute(2).await.unwrap();
         assert_eq!(result.len(), 2);
     }
 
     #[tokio::test]
     async fn empty_repo_returns_empty_list() {
-        let result = SessionsListQuery::new(MockRepo(vec![])).execute(10).await.unwrap();
+        let result = SessionsListQuery::new(MockRepo(vec![]))
+            .execute(10)
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 }

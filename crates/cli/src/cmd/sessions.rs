@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use clap::Subcommand;
 use ccode_application::queries::sessions_list::SessionsListQuery;
 use ccode_bootstrap::wire_dev;
+use clap::Subcommand;
+use std::sync::Arc;
 
 #[derive(Subcommand)]
 pub enum Action {

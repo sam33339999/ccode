@@ -1,9 +1,9 @@
+use crate::openai_compat::OpenAiCompatClient;
 use async_trait::async_trait;
 use ccode_ports::{
     PortError,
     provider::{CompletionRequest, CompletionResponse, ProviderPort, ProviderStream},
 };
-use crate::openai_compat::OpenAiCompatClient;
 
 pub struct LlamaCppAdapter {
     client: OpenAiCompatClient,

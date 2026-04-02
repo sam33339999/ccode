@@ -1,8 +1,11 @@
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use async_trait::async_trait;
 use ccode_ports::{
     PortError,
     provider::{CompletionRequest, CompletionResponse, ProviderPort, ProviderStream},
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,30 +19,36 @@ pub enum RoutingStrategy {
 }
 
 impl RoutingStrategy {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_config_value(s: &str) -> Self {
         match s {
-            "failover"    => Self::Failover,
+            "failover" => Self::Failover,
             "round_robin" => Self::RoundRobin,
-            _             => Self::Manual,
+            _ => Self::Manual,
         }
     }
 }
 
 pub struct ProviderRouter {
     providers: Vec<Arc<dyn ProviderPort>>,
-    strategy:  RoutingStrategy,
+    strategy: RoutingStrategy,
     rr_cursor: AtomicUsize,
 }
 
 impl ProviderRouter {
     pub fn new(providers: Vec<Arc<dyn ProviderPort>>, strategy: RoutingStrategy) -> Self {
-        Self { providers, strategy, rr_cursor: AtomicUsize::new(0) }
+        Self {
+            providers,
+            strategy,
+            rr_cursor: AtomicUsize::new(0),
+        }
     }
 
     fn pick_primary(&self) -> Option<&Arc<dyn ProviderPort>> {
         match self.strategy {
             RoutingStrategy::RoundRobin => {
-                if self.providers.is_empty() { return None; }
+                if self.providers.is_empty() {
+                    return None;
+                }
                 let idx = self.rr_cursor.fetch_add(1, Ordering::Relaxed) % self.providers.len();
                 self.providers.get(idx)
             }
@@ -50,10 +59,15 @@ impl ProviderRouter {
 
 #[async_trait]
 impl ProviderPort for ProviderRouter {
-    fn name(&self) -> &str { "router" }
+    fn name(&self) -> &str {
+        "router"
+    }
 
     fn default_model(&self) -> &str {
-        self.providers.first().map(|p| p.default_model()).unwrap_or("")
+        self.providers
+            .first()
+            .map(|p| p.default_model())
+            .unwrap_or("")
     }
 
     async fn health_check(&self) -> Result<(), PortError> {
@@ -69,7 +83,7 @@ impl ProviderPort for ProviderRouter {
                 let mut last_err = PortError::Provider("no providers".into());
                 for p in &self.providers {
                     match p.complete(req.clone()).await {
-                        Ok(r)  => return Ok(r),
+                        Ok(r) => return Ok(r),
                         Err(e) => {
                             tracing::warn!("[router] provider {} failed: {e}", p.name());
                             last_err = e;
@@ -93,7 +107,7 @@ impl ProviderPort for ProviderRouter {
                 let mut last_err = PortError::Provider("no providers".into());
                 for p in &self.providers {
                     match p.stream_complete(req.clone()).await {
-                        Ok(s)  => return Ok(s),
+                        Ok(s) => return Ok(s),
                         Err(e) => {
                             tracing::warn!("[router] provider {} failed: {e}", p.name());
                             last_err = e;

@@ -231,7 +231,9 @@ pub struct MemoryConfig {
     pub embedding: Option<EmbeddingConfig>,
 }
 
-fn default_memory_backend() -> String { "fts5".into() }
+fn default_memory_backend() -> String {
+    "fts5".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EmbeddingConfig {
@@ -254,15 +256,19 @@ pub struct EmbeddingOpenAiConfig {
 
 impl EmbeddingOpenAiConfig {
     pub fn resolved_api_key(&self) -> Option<String> {
-        self.api_key.clone().or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        self.api_key
+            .clone()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
     }
     pub fn resolved_model(&self) -> String {
-        self.model.clone()
+        self.model
+            .clone()
             .or_else(|| std::env::var("OPENAI_EMBEDDING_MODEL").ok())
             .unwrap_or_else(|| "text-embedding-3-small".into())
     }
     pub fn resolved_base_url(&self) -> String {
-        self.base_url.clone()
+        self.base_url
+            .clone()
             .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
             .unwrap_or_else(|| "https://api.openai.com/v1".into())
     }
@@ -280,17 +286,20 @@ pub struct EmbeddingLlamaCppConfig {
 
 impl EmbeddingLlamaCppConfig {
     pub fn resolved_base_url(&self) -> String {
-        self.base_url.clone()
+        self.base_url
+            .clone()
             .or_else(|| std::env::var("LLAMACPP_BASE_URL").ok())
             .unwrap_or_else(|| "http://127.0.0.1:8080/v1".into())
     }
     pub fn resolved_model(&self) -> String {
-        self.model.clone()
+        self.model
+            .clone()
             .or_else(|| std::env::var("LLAMACPP_EMBEDDING_MODEL").ok())
             .unwrap_or_else(|| "default".into())
     }
     pub fn resolved_api_key(&self) -> String {
-        self.api_key.clone()
+        self.api_key
+            .clone()
             .or_else(|| std::env::var("LLAMACPP_API_KEY").ok())
             .unwrap_or_default()
     }
@@ -308,15 +317,19 @@ pub struct EmbeddingZhipuConfig {
 
 impl EmbeddingZhipuConfig {
     pub fn resolved_api_key(&self) -> Option<String> {
-        self.api_key.clone().or_else(|| std::env::var("ZHIPU_API_KEY").ok())
+        self.api_key
+            .clone()
+            .or_else(|| std::env::var("ZHIPU_API_KEY").ok())
     }
     pub fn resolved_model(&self) -> String {
-        self.model.clone()
+        self.model
+            .clone()
             .or_else(|| std::env::var("ZHIPU_EMBEDDING_MODEL").ok())
             .unwrap_or_else(|| "embedding-3".into())
     }
     pub fn resolved_base_url(&self) -> String {
-        self.base_url.clone()
+        self.base_url
+            .clone()
             .or_else(|| std::env::var("ZHIPU_BASE_URL").ok())
             .unwrap_or_else(|| "https://api.z.ai/api/paas/v4".into())
     }

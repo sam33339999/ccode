@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use ccode_ports::{
-    PortError,
     tool::{FsPolicy, ToolContext, ToolPort},
+    PortError,
 };
+use serde_json::{json, Value};
 
 pub struct FsReadTool;
 
@@ -79,10 +79,7 @@ impl ToolPort for FsReadTool {
             .await
             .map_err(|e| PortError::Tool(format!("read error: {e}")))?;
 
-        let ext = resolved
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = resolved.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let lines: Vec<String> = if filter_level == "none" {
             content.lines().map(|l| l.to_string()).collect()

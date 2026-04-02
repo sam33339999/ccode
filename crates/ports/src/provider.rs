@@ -1,8 +1,8 @@
-use std::pin::Pin;
-use async_trait::async_trait;
-use futures_core::Stream;
-use ccode_domain::message::Message;
 use crate::PortError;
+use async_trait::async_trait;
+use ccode_domain::message::Message;
+use futures_core::Stream;
+use std::pin::Pin;
 
 // ── Tool definitions ───────────────────────────────────────────────────────────
 
@@ -43,13 +43,14 @@ pub enum StreamEvent {
     /// Incremental content delta from the model.
     Delta { content: String },
     /// One or more tool calls produced by the model.
-    ToolCallDone { tool_calls: Vec<ccode_domain::message::ToolCall> },
+    ToolCallDone {
+        tool_calls: Vec<ccode_domain::message::ToolCall>,
+    },
     /// Stream finished. May include final usage stats.
     Done { usage: Option<TokenUsage> },
 }
 
-pub type ProviderStream =
-    Pin<Box<dyn Stream<Item = Result<StreamEvent, PortError>> + Send>>;
+pub type ProviderStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, PortError>> + Send>>;
 
 // ── Provider port trait ────────────────────────────────────────────────────────
 
@@ -65,14 +66,8 @@ pub trait ProviderPort: Send + Sync {
     async fn health_check(&self) -> Result<(), PortError>;
 
     /// Single-shot completion (waits for full response).
-    async fn complete(
-        &self,
-        req: CompletionRequest,
-    ) -> Result<CompletionResponse, PortError>;
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, PortError>;
 
     /// Streaming completion — returns a stream of incremental events.
-    async fn stream_complete(
-        &self,
-        req: CompletionRequest,
-    ) -> Result<ProviderStream, PortError>;
+    async fn stream_complete(&self, req: CompletionRequest) -> Result<ProviderStream, PortError>;
 }

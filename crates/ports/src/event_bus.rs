@@ -1,6 +1,6 @@
+use crate::PortError;
 use async_trait::async_trait;
 use ccode_domain::event::DomainEvent;
-use crate::PortError;
 
 #[async_trait]
 pub trait EventBusPort: Send + Sync {

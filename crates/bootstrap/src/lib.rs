@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use std::path::PathBuf;
 use ccode_application::commands::agent_run::ContextPolicy;
 use ccode_ports::{
     cron::CronRepository,
@@ -7,7 +5,21 @@ use ccode_ports::{
     repositories::SessionRepository,
     tool::{FsPolicy, Permission, ShellPolicy, ToolContext},
 };
-use ccode_tools::{ToolRegistry, fs::{FsReadTool, FsWriteTool, FsEditTool, FsListTool, FsGrepTool, FsGlobTool}, shell::ShellTool, web::{WebFetchTool, BrowserTool}, spawn_agent::SpawnAgentTool};
+use ccode_tools::{
+    ToolRegistry,
+    fs::{FsEditTool, FsGlobTool, FsGrepTool, FsListTool, FsReadTool, FsWriteTool},
+    shell::ShellTool,
+    spawn_agent::SpawnAgentTool,
+    web::{BrowserTool, WebFetchTool},
+};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+pub mod exports {
+    pub use ccode_cron::{next_run_ms, parse_natural_schedule};
+    pub use ccode_domain::cron::{CronJob, CronJobId};
+    pub use ccode_ports::{cron::CronRepository, provider::ProviderPort};
+}
 
 /// Shared application state passed into every request handler.
 pub struct AppState {
@@ -52,17 +64,17 @@ pub fn build_tool_registry(
     registry.register(Arc::new(WebFetchTool::new()));
     registry.register(Arc::new(BrowserTool::new()));
     if let (Some(repo), Some(prov)) = (cron_repo, provider) {
-        registry.register(Arc::new(
-            ccode_tools::cron_create::CronCreateTool::new(repo, prov),
-        ));
+        registry.register(Arc::new(ccode_tools::cron_create::CronCreateTool::new(
+            repo, prov,
+        )));
     }
     registry
 }
 
 /// Dev/test wiring — in-memory everything, no config required.
 pub fn wire_dev() -> AppState {
-    use ccode_session::in_memory::InMemorySessionRepo;
     use ccode_cron::FileCronRepo;
+    use ccode_session::in_memory::InMemorySessionRepo;
     let cwd = std::env::current_dir().unwrap_or_default();
     let cron_dir = std::env::temp_dir().join("ccode-dev-cron");
     AppState {
@@ -92,8 +104,9 @@ fn wire_spawn_agent(
 
     // We need a mutable ToolRegistry — unwrap the Arc (only one owner at this point)
     // and re-wrap after registration.
-    let mut inner = Arc::try_unwrap(registry)
-        .unwrap_or_else(|_| panic!("wire_spawn_agent must be called before the registry Arc is cloned"));
+    let mut inner = Arc::try_unwrap(registry).unwrap_or_else(|_| {
+        panic!("wire_spawn_agent must be called before the registry Arc is cloned")
+    });
     inner.register(Arc::new(spawn_tool));
     let registry = Arc::new(inner);
 
@@ -117,9 +130,9 @@ pub fn wire_from_config() -> Result<AppState, WireError> {
 /// If `None`, falls back to `sandbox.cwd` in config, then `std::env::current_dir()`
 /// (gateway/server usage where no invocation directory exists).
 pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppState, WireError> {
-    use ccode_session::jsonl::FileSessionRepo;
     use ccode_cron::FileCronRepo;
     use ccode_provider::factory;
+    use ccode_session::jsonl::FileSessionRepo;
 
     let config = ccode_config::load().map_err(WireError::Config)?;
     let base = ccode_config::paths::ccode_dir();
@@ -127,8 +140,8 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
     let session_repo = FileSessionRepo::new(base.join("sessions"))
         .map_err(|e| WireError::Storage(e.to_string()))?;
 
-    let cron_repo = FileCronRepo::new(base.join("cron"))
-        .map_err(|e| WireError::Storage(e.to_string()))?;
+    let cron_repo =
+        FileCronRepo::new(base.join("cron")).map_err(|e| WireError::Storage(e.to_string()))?;
 
     let provider = match factory::build_default(&config) {
         Ok(p) => Some(p),
@@ -140,7 +153,9 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
     };
 
     let cwd = cwd_override.unwrap_or_else(|| {
-        config.sandbox.as_ref()
+        config
+            .sandbox
+            .as_ref()
             .and_then(|s| s.cwd.as_deref())
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
@@ -185,9 +200,15 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
 fn context_policy_from_config(cfg: &ccode_config::schema::ContextConfig) -> ContextPolicy {
     let defaults = ContextPolicy::default();
     ContextPolicy {
-        compress_chars_threshold: cfg.compress_chars_threshold.unwrap_or(defaults.compress_chars_threshold),
-        keep_recent_messages:     cfg.keep_recent_messages.unwrap_or(defaults.keep_recent_messages),
-        tool_result_max_chars:    cfg.tool_result_max_chars.unwrap_or(defaults.tool_result_max_chars),
+        compress_chars_threshold: cfg
+            .compress_chars_threshold
+            .unwrap_or(defaults.compress_chars_threshold),
+        keep_recent_messages: cfg
+            .keep_recent_messages
+            .unwrap_or(defaults.keep_recent_messages),
+        tool_result_max_chars: cfg
+            .tool_result_max_chars
+            .unwrap_or(defaults.tool_result_max_chars),
     }
 }
 
@@ -198,23 +219,23 @@ fn permission_from_sandbox(sandbox: Option<&ccode_config::schema::SandboxConfig>
     Permission {
         fs_read: match s.fs_read.as_deref() {
             Some("none") => FsPolicy::None,
-            Some("cwd")  => FsPolicy::Cwd,
-            _            => FsPolicy::Any,
+            Some("cwd") => FsPolicy::Cwd,
+            _ => FsPolicy::Any,
         },
         fs_write: match s.fs_write.as_deref() {
             Some("none") => FsPolicy::None,
-            Some("cwd")  => FsPolicy::Cwd,
-            _            => FsPolicy::Any,
+            Some("cwd") => FsPolicy::Cwd,
+            _ => FsPolicy::Any,
         },
         shell: match s.shell.as_deref() {
             Some("none") => ShellPolicy::None,
             Some("any") | None => ShellPolicy::Any,
-            Some(list)  => ShellPolicy::Allowlist(
-                list.split(',').map(|c| c.trim().to_string()).collect(),
-            ),
+            Some(list) => {
+                ShellPolicy::Allowlist(list.split(',').map(|c| c.trim().to_string()).collect())
+            }
         },
         web_fetch: s.web_fetch.unwrap_or(true),
-        browser:   s.browser.unwrap_or(true),
+        browser: s.browser.unwrap_or(true),
     }
 }
 

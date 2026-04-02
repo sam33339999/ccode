@@ -1,5 +1,5 @@
-pub mod fetch;
 pub mod browser;
+pub mod fetch;
 
-pub use fetch::WebFetchTool;
 pub use browser::BrowserTool;
+pub use fetch::WebFetchTool;

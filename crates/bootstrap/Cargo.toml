@@ -14,3 +14,7 @@ ccode-tools        = { path = "../tools" }
 ccode-cron         = { path = "../cron" }
 thiserror           = { workspace = true }
 tracing             = { workspace = true }
+
+[dev-dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }

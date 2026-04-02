@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use ccode_ports::{
-    PortError,
     tool::{FsPolicy, ToolContext, ToolPort},
+    PortError,
 };
+use serde_json::{json, Value};
 
 pub struct FsEditTool;
 
@@ -117,7 +117,7 @@ impl ToolPort for FsEditTool {
             let to_idx = to_line as usize; // exclusive
 
             let replacement_lines: Vec<&str> = new_string.lines().collect();
-            let replaced_count = (to_line - from_line + 1) as u64;
+            let replaced_count = to_line - from_line + 1;
 
             let mut new_lines: Vec<&str> = Vec::new();
             new_lines.extend_from_slice(&lines[..from_idx]);
@@ -141,7 +141,10 @@ impl ToolPort for FsEditTool {
         // Atomic write
         let tmp_path = resolved.with_extension(format!(
             "{}.tmp",
-            resolved.extension().and_then(|e| e.to_str()).unwrap_or("bak")
+            resolved
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("bak")
         ));
         tokio::fs::write(&tmp_path, &new_content)
             .await

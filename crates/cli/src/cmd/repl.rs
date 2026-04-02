@@ -1,9 +1,9 @@
+use ccode_application::commands::agent_run::AgentRunCommand;
+use clap::Args;
+use rustyline::{DefaultEditor, error::ReadlineError};
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use clap::Args;
-use rustyline::{DefaultEditor, error::ReadlineError};
-use ccode_application::commands::agent_run::AgentRunCommand;
 #[derive(Args)]
 pub struct ReplArgs {
     /// Resume an existing session by ID
@@ -18,26 +18,37 @@ pub struct ReplArgs {
 }
 
 pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
-    let state = ccode_bootstrap::wire_from_config_with_cwd(
-        std::env::current_dir().ok(),
-    )
-    .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
+    let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok())
+        .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
 
     let provider = state
-        .provider.clone()
+        .provider
+        .clone()
         .ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set OPENROUTER_API_KEY"))?;
 
-    eprintln!("[provider: {} | model: {}]", provider.name(), provider.default_model());
+    eprintln!(
+        "[provider: {} | model: {}]",
+        provider.name(),
+        provider.default_model()
+    );
 
     let registry = Arc::clone(&state.tool_registry);
     let tool_ctx = Arc::new(state.tool_ctx());
     let tool_definitions = registry.definitions();
 
-    eprintln!("[tools: {}]", tool_definitions.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "));
+    eprintln!(
+        "[tools: {}]",
+        tool_definitions
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     eprintln!("[type 'exit' or press Ctrl+D to quit]\n");
 
-    let cmd = Arc::new(AgentRunCommand::new(state.session_repo, provider)
-        .with_context(state.context_policy));
+    let cmd = Arc::new(
+        AgentRunCommand::new(state.session_repo, provider).with_context(state.context_policy),
+    );
     let mut session_id: Option<String> = args.session;
     let persona = args.persona;
     let no_confirm = args.no_confirm;
@@ -68,24 +79,34 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                     let tools = tool_definitions.clone();
                     let always_allowed_clone = always_allowed.clone();
 
-                    let execute_tool = move |name: String, tool_args: serde_json::Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> {
+                    let execute_tool = move |name: String,
+                                             tool_args: serde_json::Value|
+                          -> std::pin::Pin<
+                        Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+                    > {
                         let registry = registry_clone.clone();
                         let tool_ctx = tool_ctx_clone.clone();
                         let always_allowed = always_allowed_clone.clone();
                         Box::pin(async move {
                             let is_always = always_allowed.lock().unwrap().contains(&name);
                             if !no_confirm && !is_always {
-                                eprint!("\n[tool: {}] args: {}\nAllow? [y/n/always]: ", name, tool_args);
+                                eprint!(
+                                    "\n[tool: {}] args: {}\nAllow? [y/n/always]: ",
+                                    name, tool_args
+                                );
                                 let _ = std::io::stderr().flush();
                                 let mut input = String::new();
                                 std::io::stdin().read_line(&mut input).ok();
                                 match input.trim().to_lowercase().as_str() {
                                     "n" | "no" => return Err("user denied".to_string()),
-                                    "always" => { always_allowed.lock().unwrap().insert(name.clone()); }
+                                    "always" => {
+                                        always_allowed.lock().unwrap().insert(name.clone());
+                                    }
                                     _ => {}
                                 }
                             }
-                            registry.execute(&name, tool_args, &tool_ctx)
+                            registry
+                                .execute(&name, tool_args, &tool_ctx)
                                 .await
                                 .map_err(|e| e.to_string())
                         })

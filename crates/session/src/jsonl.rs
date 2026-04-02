@@ -1,7 +1,8 @@
-use std::path::PathBuf;
 use async_trait::async_trait;
 use ccode_domain::session::{Session, SessionId, SessionSummary};
 use ccode_ports::{PortError, repositories::SessionRepository};
+use std::cmp::Reverse;
+use std::path::PathBuf;
 
 /// File-based session repository.
 /// Each session is stored as `<dir>/<session_id>.json`.
@@ -48,7 +49,7 @@ impl SessionRepository for FileSessionRepo {
                 Err(e) => tracing::warn!("skipping corrupt session file {:?}: {e}", path),
             }
         }
-        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        summaries.sort_by_key(|s| Reverse(s.updated_at));
         summaries.truncate(limit);
         Ok(summaries)
     }
@@ -57,8 +58,8 @@ impl SessionRepository for FileSessionRepo {
         let path = self.path_for(id);
         match tokio::fs::read(&path).await {
             Ok(data) => {
-                let session = serde_json::from_slice(&data)
-                    .map_err(|e| PortError::Storage(e.to_string()))?;
+                let session =
+                    serde_json::from_slice(&data).map_err(|e| PortError::Storage(e.to_string()))?;
                 Ok(Some(session))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -69,8 +70,8 @@ impl SessionRepository for FileSessionRepo {
     async fn save(&self, session: &Session) -> Result<(), PortError> {
         let path = self.path_for(&session.id);
         let tmp = path.with_extension("json.tmp");
-        let data = serde_json::to_vec_pretty(session)
-            .map_err(|e| PortError::Storage(e.to_string()))?;
+        let data =
+            serde_json::to_vec_pretty(session).map_err(|e| PortError::Storage(e.to_string()))?;
         tokio::fs::write(&tmp, &data)
             .await
             .map_err(|e| PortError::Storage(e.to_string()))?;

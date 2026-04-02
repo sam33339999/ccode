@@ -1,12 +1,12 @@
+use super::types::*;
 use async_stream::stream;
-use futures::StreamExt;
-use std::collections::HashMap;
 use ccode_domain::message::{Role, ToolCall};
 use ccode_ports::{
     PortError,
     provider::{CompletionRequest, CompletionResponse, ProviderStream, StreamEvent, TokenUsage},
 };
-use super::types::*;
+use futures::StreamExt;
+use std::collections::HashMap;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
@@ -61,24 +61,25 @@ impl AnthropicCompatClient {
     /// 2. Assistant + tool_calls → content 為 block 陣列（text block + tool_use blocks）
     /// 3. Tool（工具結果）→ role="user"，content 為 tool_result block 陣列；
     ///    **連續多個 Tool 訊息必須合併成同一個 user 訊息**（Anthropic 禁止連續同 role）
-    fn split_system(
-        &self,
-        req: &CompletionRequest,
-    ) -> (Option<String>, Vec<AnthropicMessage>) {
-        use serde_json::{json, Value};
+    fn split_system(&self, req: &CompletionRequest) -> (Option<String>, Vec<AnthropicMessage>) {
+        use serde_json::{Value, json};
 
         let mut system_parts: Vec<String> = Vec::new();
         let mut messages: Vec<AnthropicMessage> = Vec::new();
 
         // 先過濾 System，並把其餘訊息逐一轉換
-        let non_system: Vec<_> = req.messages.iter().filter(|m| {
-            if m.role == Role::System {
-                system_parts.push(m.content.clone());
-                false
-            } else {
-                true
-            }
-        }).collect();
+        let non_system: Vec<_> = req
+            .messages
+            .iter()
+            .filter(|m| {
+                if m.role == Role::System {
+                    system_parts.push(m.content.clone());
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
 
         let mut i = 0;
         while i < non_system.len() {
@@ -296,50 +297,61 @@ impl AnthropicCompatClient {
                                         }
                                         Ok(event) => match event.event_type.as_str() {
                                             "message_start" => {
-                                                if let Some(msg) = event.message {
-                                                    if let Some(u) = msg.usage {
-                                                        input_tokens = u.input_tokens;
-                                                    }
+                                                if let Some(msg) = event.message
+                                                    && let Some(u) = msg.usage
+                                                {
+                                                    input_tokens = u.input_tokens;
                                                 }
                                             }
                                             "content_block_start" => {
-                                                if let (Some(block), Some(idx)) = (event.content_block, event.index) {
-                                                    if block.block_type == "tool_use" {
-                                                        tool_use_indices.insert(idx);
-                                                        tool_use_buf.insert(idx, (
+                                                if let (Some(block), Some(idx)) =
+                                                    (event.content_block, event.index)
+                                                    && block.block_type == "tool_use"
+                                                {
+                                                    tool_use_indices.insert(idx);
+                                                    tool_use_buf.insert(
+                                                        idx,
+                                                        (
                                                             block.id.unwrap_or_default(),
                                                             block.name.unwrap_or_default(),
                                                             String::new(),
-                                                        ));
-                                                    }
+                                                        ),
+                                                    );
                                                 }
                                             }
                                             "content_block_delta" => {
                                                 if let Some(delta) = event.delta {
                                                     if delta.delta_type == "text_delta" {
-                                                        if let Some(text) = delta.text {
-                                                            if !text.is_empty() {
-                                                                yield Ok(StreamEvent::Delta { content: text });
-                                                            }
+                                                        if let Some(text) = delta.text
+                                                            && !text.is_empty()
+                                                        {
+                                                            yield Ok(StreamEvent::Delta {
+                                                                content: text,
+                                                            });
                                                         }
-                                                    } else if delta.delta_type == "input_json_delta" {
-                                                        if let (Some(partial), Some(idx)) = (delta.partial_json, event.index) {
-                                                            if let Some(entry) = tool_use_buf.get_mut(&idx) {
-                                                                entry.2.push_str(&partial);
-                                                            }
-                                                        }
+                                                    } else if delta.delta_type == "input_json_delta"
+                                                        && let (Some(partial), Some(idx)) =
+                                                            (delta.partial_json, event.index)
+                                                        && let Some(entry) =
+                                                            tool_use_buf.get_mut(&idx)
+                                                    {
+                                                        entry.2.push_str(&partial);
                                                     }
                                                 }
                                             }
                                             "content_block_stop" => {
                                                 // When a tool_use block stops, emit its tool call
-                                                if let Some(idx) = event.index {
-                                                    if tool_use_indices.remove(&idx) {
-                                                        if let Some((id, name, args)) = tool_use_buf.remove(&idx) {
-                                                            let tool_calls = vec![ToolCall { id, name, arguments: args }];
-                                                            yield Ok(StreamEvent::ToolCallDone { tool_calls });
-                                                        }
-                                                    }
+                                                if let Some(idx) = event.index
+                                                    && tool_use_indices.remove(&idx)
+                                                    && let Some((id, name, args)) =
+                                                        tool_use_buf.remove(&idx)
+                                                {
+                                                    let tool_calls = vec![ToolCall {
+                                                        id,
+                                                        name,
+                                                        arguments: args,
+                                                    }];
+                                                    yield Ok(StreamEvent::ToolCallDone { tool_calls });
                                                 }
                                             }
                                             "message_delta" => {
@@ -373,4 +385,3 @@ impl AnthropicCompatClient {
         Ok(Box::pin(s))
     }
 }
-

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use ccode_ports::{
-    PortError,
     tool::{FsPolicy, ToolContext, ToolPort},
+    PortError,
 };
+use serde_json::{json, Value};
 
 pub struct FsWriteTool;
 
@@ -78,7 +78,10 @@ impl ToolPort for FsWriteTool {
         // Atomic write via temp file
         let tmp_path = resolved.with_extension(format!(
             "{}.tmp",
-            resolved.extension().and_then(|e| e.to_str()).unwrap_or("bak")
+            resolved
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("bak")
         ));
 
         tokio::fs::write(&tmp_path, content)

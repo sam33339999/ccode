@@ -1,14 +1,14 @@
-use std::sync::{Arc, OnceLock};
+use crate::ToolRegistry;
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use ccode_application::commands::agent_run::{AgentRunCommand, ContextPolicy};
 use ccode_ports::{
     provider::ProviderPort,
     repositories::SessionRepository,
-    PortError,
     tool::{ToolContext, ToolPort},
+    PortError,
 };
-use crate::ToolRegistry;
+use serde_json::{json, Value};
+use std::sync::{Arc, OnceLock};
 
 /// Tool that lets the agent delegate a sub-task to a child agent.
 ///
@@ -49,7 +49,9 @@ impl SpawnAgentTool {
 
 #[async_trait]
 impl ToolPort for SpawnAgentTool {
-    fn name(&self) -> &str { "spawn_agent" }
+    fn name(&self) -> &str {
+        "spawn_agent"
+    }
 
     fn description(&self) -> &str {
         "Spawn a sub-agent to handle a delegated sub-task independently. \
@@ -85,16 +87,12 @@ impl ToolPort for SpawnAgentTool {
             .to_string();
         let persona = args["persona"].as_str().map(|s| s.to_string());
 
-        let registry = self
-            .registry_cell
-            .get()
-            .ok_or_else(|| PortError::Tool("spawn_agent: tool registry not yet initialized".into()))?;
+        let registry = self.registry_cell.get().ok_or_else(|| {
+            PortError::Tool("spawn_agent: tool registry not yet initialized".into())
+        })?;
 
-        let cmd = AgentRunCommand::new(
-            Arc::clone(&self.session_repo),
-            Arc::clone(&self.provider),
-        )
-        .with_context(self.context_policy.clone());
+        let cmd = AgentRunCommand::new(Arc::clone(&self.session_repo), Arc::clone(&self.provider))
+            .with_context(self.context_policy.clone());
 
         let tool_definitions = registry.definitions();
         let registry = Arc::clone(registry);
@@ -109,7 +107,11 @@ impl ToolPort for SpawnAgentTool {
         };
 
         // Sub-agent auto-approves all tool calls — no interactive stdin
-        let execute_tool = move |name: String, tool_args: Value| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> {
+        let execute_tool = move |name: String,
+                                 tool_args: Value|
+              -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+        > {
             let registry = registry.clone();
             let tool_ctx = tool_ctx.clone();
             Box::pin(async move {

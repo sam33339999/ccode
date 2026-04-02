@@ -1,8 +1,9 @@
-use std::sync::Arc;
-use clap::Subcommand;
+use ccode_bootstrap::exports::{
+    CronJob, CronJobId, CronRepository, ProviderPort, next_run_ms, parse_natural_schedule,
+};
 use ccode_bootstrap::wire_from_config;
-use ccode_domain::cron::{CronJob, CronJobId};
-use ccode_ports::{cron::CronRepository, provider::ProviderPort};
+use clap::Subcommand;
+use std::sync::Arc;
 
 #[derive(Subcommand)]
 pub enum Action {
@@ -38,13 +39,17 @@ pub enum Action {
 }
 
 pub async fn run(action: Action) -> anyhow::Result<()> {
-    let state = wire_from_config()
-        .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
+    let state = wire_from_config().map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
 
     match action {
         Action::List => list(&state.cron_repo).await,
-        Action::Add { name, when, message } => {
-            let provider = state.provider
+        Action::Add {
+            name,
+            when,
+            message,
+        } => {
+            let provider = state
+                .provider
                 .ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set an API key"))?;
             add(&state.cron_repo, provider, name, when, message).await
         }
@@ -60,7 +65,7 @@ async fn list(repo: &dyn CronRepository) -> anyhow::Result<()> {
         println!("No scheduled jobs.");
         return Ok(());
     }
-    println!("{:<24}  {:<16}  {:<20}  {}  message", "id", "name", "when", "en");
+    println!("{:<24}  {:<16}  {:<20}  en  message", "id", "name", "when");
     println!("{}", "─".repeat(90));
     for job in &jobs {
         let enabled = if job.enabled { "✓" } else { "✗" };
@@ -84,7 +89,7 @@ async fn add(
     message: String,
 ) -> anyhow::Result<()> {
     eprint!("Parsing schedule...");
-    let schedule = ccode_cron::parse_natural_schedule(&*provider, &when)
+    let schedule = parse_natural_schedule(&*provider, &when)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     eprintln!(" → {schedule}");
@@ -92,7 +97,7 @@ async fn add(
     let now = now_ms();
     let job_id = format!("cron-{now}");
     let mut job = CronJob::new(job_id, name, when, schedule, message, now);
-    job.next_run_at = ccode_cron::next_run_ms(&job.schedule);
+    job.next_run_at = next_run_ms(&job.schedule);
 
     repo.save(&job).await?;
     println!("Created job: {}", job.id);
@@ -116,7 +121,7 @@ async fn set_enabled(repo: &dyn CronRepository, id: String, enabled: bool) -> an
         .ok_or_else(|| anyhow::anyhow!("job not found: {id}"))?;
     job.enabled = enabled;
     if enabled {
-        job.next_run_at = ccode_cron::next_run_ms(&job.schedule);
+        job.next_run_at = next_run_ms(&job.schedule);
     }
     repo.save(&job).await?;
     let state = if enabled { "enabled" } else { "disabled" };

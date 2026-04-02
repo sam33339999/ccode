@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use crate::PortError;
 use async_trait::async_trait;
 use ccode_domain::session::{Session, SessionId, SessionSummary};
-use crate::PortError;
+use std::sync::Arc;
 
 #[async_trait]
 pub trait SessionRepository: Send + Sync {

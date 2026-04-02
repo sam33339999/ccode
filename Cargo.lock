@@ -192,6 +192,8 @@ dependencies = [
  "ccode-provider",
  "ccode-session",
  "ccode-tools",
+ "serde",
+ "serde_json",
  "thiserror",
  "tracing",
 ]
@@ -203,9 +205,6 @@ dependencies = [
  "anyhow",
  "ccode-application",
  "ccode-bootstrap",
- "ccode-cron",
- "ccode-domain",
- "ccode-ports",
  "chrono",
  "clap",
  "futures",
@@ -249,6 +248,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccode-mcp-runtime"
+version = "0.1.0"
+
+[[package]]
+name = "ccode-platform"
+version = "0.1.0"
+
+[[package]]
 name = "ccode-ports"
 version = "0.1.0"
 dependencies = [
@@ -280,6 +287,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccode-remote-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "ccode-session"
 version = "0.1.0"
 dependencies = [
@@ -290,6 +301,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "ccode-state-store"
+version = "0.1.0"
 
 [[package]]
 name = "ccode-tools"

@@ -1,14 +1,12 @@
+use super::types::*;
 use async_stream::stream;
-use futures::StreamExt;
-use std::collections::HashMap;
 use ccode_domain::message::{Role, ToolCall};
 use ccode_ports::{
     PortError,
-    provider::{
-        CompletionRequest, CompletionResponse, ProviderStream, StreamEvent, TokenUsage,
-    },
+    provider::{CompletionRequest, CompletionResponse, ProviderStream, StreamEvent, TokenUsage},
 };
-use super::types::*;
+use futures::StreamExt;
+use std::collections::HashMap;
 
 /// Shared HTTP client for OpenAI-compatible APIs.
 ///
@@ -62,17 +60,19 @@ impl OpenAiCompatClient {
                 // assistant role：可能帶 tool_calls（純工具呼叫時 content 為 null）
                 if m.role == Role::Assistant {
                     let tool_calls = m.tool_calls.as_ref().map(|tcs| {
-                        tcs.iter().map(|tc| OpenAiToolCall {
-                            id: tc.id.clone(),
-                            r#type: "function".into(),
-                            function: OpenAiToolCallFunction {
-                                name: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                            },
-                        }).collect::<Vec<_>>()
+                        tcs.iter()
+                            .map(|tc| OpenAiToolCall {
+                                id: tc.id.clone(),
+                                r#type: "function".into(),
+                                function: OpenAiToolCallFunction {
+                                    name: tc.name.clone(),
+                                    arguments: tc.arguments.clone(),
+                                },
+                            })
+                            .collect::<Vec<_>>()
                     });
                     let content = if m.content.is_empty() && tool_calls.is_some() {
-                        None  // 純工具呼叫，content 送 null
+                        None // 純工具呼叫，content 送 null
                     } else {
                         Some(m.content.clone())
                     };
@@ -104,7 +104,11 @@ impl OpenAiCompatClient {
                 },
             })
             .collect();
-        let tool_choice = if tools.is_empty() { None } else { Some("auto".into()) };
+        let tool_choice = if tools.is_empty() {
+            None
+        } else {
+            Some("auto".into())
+        };
         ChatRequest {
             model,
             messages,
@@ -262,10 +266,10 @@ impl OpenAiCompatClient {
 
                                             for choice in chunk.choices {
                                                 // Accumulate text content
-                                                if let Some(content) = choice.delta.content {
-                                                    if !content.is_empty() {
-                                                        yield Ok(StreamEvent::Delta { content });
-                                                    }
+                                                if let Some(content) = choice.delta.content
+                                                    && !content.is_empty()
+                                                {
+                                                    yield Ok(StreamEvent::Delta { content });
                                                 }
                                                 // Accumulate tool call deltas
                                                 if let Some(tc_deltas) = choice.delta.tool_calls {

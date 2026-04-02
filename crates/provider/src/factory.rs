@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use ccode_config::schema::Config;
 use ccode_ports::provider::ProviderPort;
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FactoryError {
@@ -37,12 +37,7 @@ pub fn build(name: &str, config: &Config) -> Result<Arc<dyn ProviderPort>, Facto
         #[cfg(feature = "provider-zhipu")]
         "zhipu" => {
             use crate::zhipu::ZhipuAdapter;
-            let cfg = config
-                .providers
-                .zhipu
-                .as_ref()
-                .cloned()
-                .unwrap_or_default();
+            let cfg = config.providers.zhipu.as_ref().cloned().unwrap_or_default();
             let api_key = cfg
                 .resolved_api_key()
                 .ok_or(FactoryError::NotConfigured("zhipu"))?;
@@ -98,10 +93,14 @@ pub fn build(name: &str, config: &Config) -> Result<Arc<dyn ProviderPort>, Facto
 pub fn build_default(config: &Config) -> Result<Arc<dyn ProviderPort>, FactoryError> {
     use crate::router::{ProviderRouter, RoutingStrategy};
 
-    let strategy = RoutingStrategy::from_str(&config.routing.strategy);
+    let strategy = RoutingStrategy::from_config_value(&config.routing.strategy);
 
     if strategy == RoutingStrategy::Manual {
-        let name = config.routing.default_provider.as_deref().unwrap_or("openrouter");
+        let name = config
+            .routing
+            .default_provider
+            .as_deref()
+            .unwrap_or("openrouter");
         return build(name, config);
     }
 
@@ -110,10 +109,10 @@ pub fn build_default(config: &Config) -> Result<Arc<dyn ProviderPort>, FactoryEr
     let mut providers: Vec<Arc<dyn ProviderPort>> = Vec::new();
 
     // Put default_provider first if specified
-    if let Some(default) = config.routing.default_provider.as_deref() {
-        if let Ok(p) = build(default, config) {
-            providers.push(p);
-        }
+    if let Some(default) = config.routing.default_provider.as_deref()
+        && let Ok(p) = build(default, config)
+    {
+        providers.push(p);
     }
     for name in candidates {
         if Some(name) == config.routing.default_provider.as_deref() {

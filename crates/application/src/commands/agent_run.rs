@@ -1,7 +1,4 @@
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::pin::Pin;
-use std::future::Future;
+use crate::error::AppError;
 use ccode_domain::{
     message::{Message, Role},
     session::{Session, SessionId},
@@ -11,7 +8,10 @@ use ccode_ports::{
     repositories::SessionRepository,
 };
 use futures::StreamExt;
-use crate::error::AppError;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Configures context window management for the agentic loop.
 /// All values have sensible defaults — only override what you need.
@@ -45,9 +45,17 @@ pub struct AgentRunCommand<R> {
     context: ContextPolicy,
 }
 
+type ExecuteToolFn = dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
+    + Send
+    + Sync;
+
 impl<R: SessionRepository> AgentRunCommand<R> {
     pub fn new(repo: R, provider: Arc<dyn ProviderPort>) -> Self {
-        Self { repo, provider, context: ContextPolicy::default() }
+        Self {
+            repo,
+            provider,
+            context: ContextPolicy::default(),
+        }
     }
 
     pub fn with_context(mut self, policy: ContextPolicy) -> Self {
@@ -64,9 +72,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         user_content: String,
         tools: Vec<ToolDefinition>,
         on_delta: &(dyn Fn(String) + Send + Sync),
-        execute_tool: &(dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
-            + Send
-            + Sync),
+        execute_tool: &ExecuteToolFn,
     ) -> Result<SessionId, AppError> {
         let now = now_ms();
 
@@ -82,14 +88,11 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         };
 
         // Prepend system prompt only when starting a fresh session
-        if let Some(ref prompt) = system_prompt {
-            if session.messages.is_empty() {
-                let sys_id = format!("msg-{now}-sys");
-                session.add_message(
-                    Message::new(sys_id, Role::System, prompt.clone(), now),
-                    now,
-                );
-            }
+        if let Some(ref prompt) = system_prompt
+            && session.messages.is_empty()
+        {
+            let sys_id = format!("msg-{now}-sys");
+            session.add_message(Message::new(sys_id, Role::System, prompt.clone(), now), now);
         }
 
         // Add the user message
@@ -105,12 +108,9 @@ impl<R: SessionRepository> AgentRunCommand<R> {
             // tool results that would overflow the model's context window.
             let total_chars: usize = session.messages.iter().map(|m| m.content.len()).sum();
             if total_chars > self.context.compress_chars_threshold {
-                session = compress_context(
-                    session,
-                    &*self.provider,
-                    self.context.keep_recent_messages,
-                )
-                .await?;
+                session =
+                    compress_context(session, &*self.provider, self.context.keep_recent_messages)
+                        .await?;
                 self.repo.save(&session).await?;
             }
 
@@ -278,7 +278,13 @@ async fn compress_context(
     // Build a text transcript for the LLM to summarise
     let transcript: String = to_compress
         .iter()
-        .map(|m| format!("[{}]: {}", format!("{:?}", m.role).to_lowercase(), m.content))
+        .map(|m| {
+            format!(
+                "[{}]: {}",
+                format!("{:?}", m.role).to_lowercase(),
+                m.content
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -290,7 +296,12 @@ async fn compress_context(
     );
 
     let req = CompletionRequest {
-        messages: vec![Message::new("compress-req", Role::User, summary_prompt, now_ms())],
+        messages: vec![Message::new(
+            "compress-req",
+            Role::User,
+            summary_prompt,
+            now_ms(),
+        )],
         model: None,
         max_tokens: Some(1024),
         temperature: Some(0.0),

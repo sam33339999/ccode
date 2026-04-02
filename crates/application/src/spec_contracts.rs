@@ -338,18 +338,100 @@ pub trait AssistantModeService: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
-pub struct ModeResolutionInput;
+pub struct ModeResolutionInput {
+    pub policy_enabled: bool,
+    pub env_mode: Option<CoordinatorMode>,
+    pub session_mode: Option<SessionMode>,
+    pub previous_mode: Option<CoordinatorMode>,
+}
+
+impl ModeResolutionInput {
+    pub fn from_env(
+        policy_enabled: bool,
+        session_mode: Option<SessionMode>,
+        previous_mode: Option<CoordinatorMode>,
+    ) -> Self {
+        Self {
+            policy_enabled,
+            env_mode: std::env::var(CLAUDE_CODE_COORDINATOR_MODE)
+                .ok()
+                .as_deref()
+                .and_then(CoordinatorMode::parse),
+            session_mode,
+            previous_mode,
+        }
+    }
+}
+
+pub const CLAUDE_CODE_COORDINATOR_MODE: &str = "CLAUDE_CODE_COORDINATOR_MODE";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoordinatorMode {
+    Standard,
+    Coordinator,
+}
+
+impl CoordinatorMode {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "standard" | "off" | "false" | "disabled" => Some(Self::Standard),
+            "coordinator" | "on" | "true" | "enabled" => Some(Self::Coordinator),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveModeSource {
+    Default,
+    Env,
+    Session,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionMode {
+    pub mode: CoordinatorMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeSwitchReason {
+    SessionPrecedence,
+    EnvConfigured,
+    DefaultFallback,
+    ResumeReconcile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeSwitchEvent {
+    pub from: CoordinatorMode,
+    pub to: CoordinatorMode,
+    pub reason: ModeSwitchReason,
+}
 
 #[derive(Debug, Clone)]
-pub struct EffectiveMode;
+pub struct EffectiveMode {
+    pub mode: CoordinatorMode,
+    pub source: EffectiveModeSource,
+    pub switch_event: Option<ModeSwitchEvent>,
+    pub error: Option<CoordinatorModeError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeReconcileAction {
+    Noop,
+    SessionWins,
+    EnvAdopted,
+}
 
 #[derive(Debug, Clone)]
-pub struct SessionMode;
+pub struct ModeReconcileResult {
+    pub mode: CoordinatorMode,
+    pub action: ModeReconcileAction,
+    pub switch_event: Option<ModeSwitchEvent>,
+    pub error: Option<CoordinatorModeError>,
+}
 
-#[derive(Debug, Clone)]
-pub struct ModeReconcileResult;
-
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum CoordinatorModeError {
     #[error("disabled by policy")]
     DisabledByPolicy,

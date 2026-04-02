@@ -540,6 +540,8 @@ pub enum WorkerStatus {
 pub struct CoordinatorSummary {
     pub completed: usize,
     pub failed: usize,
+    pub key_findings: Vec<String>,
+    pub next_actions: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

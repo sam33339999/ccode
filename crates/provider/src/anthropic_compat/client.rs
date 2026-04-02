@@ -42,6 +42,21 @@ impl AnthropicCompatClient {
         }
     }
 
+    /// Inject a custom `reqwest::Client` — used in acceptance tests to set short timeouts.
+    pub(crate) fn new_for_test(
+        client: reqwest::Client,
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
+        Self {
+            client,
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+            default_model: default_model.into(),
+        }
+    }
+
     fn messages_endpoint(&self) -> String {
         format!("{}/messages", self.base_url)
     }

@@ -16,6 +16,18 @@ impl AnthropicAdapter {
             client: AnthropicCompatClient::new(api_key, base_url, default_model),
         }
     }
+
+    /// Inject a custom `reqwest::Client` — used in acceptance tests to set short timeouts.
+    pub fn new_for_test(
+        http: reqwest::Client,
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        default_model: impl Into<String>,
+    ) -> Self {
+        Self {
+            client: AnthropicCompatClient::new_for_test(http, api_key, base_url, default_model),
+        }
+    }
 }
 
 #[async_trait]

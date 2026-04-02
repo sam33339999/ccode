@@ -4,7 +4,7 @@
 
 configVersion = "2.1"
 tracker = "json"
-agent = "claude"
+agent = "codex"
 maxIterations = 0
 autoCommit = false
 

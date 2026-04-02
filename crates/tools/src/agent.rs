@@ -108,7 +108,9 @@ impl ToolPort for AgentTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a worker agent from a WorkerTaskSpec in coordinator mode."
+        "Spawn a worker agent from a WorkerTaskSpec in coordinator mode. \
+         Pass session_id from a previous result to resume an existing worker's \
+         conversation instead of starting fresh."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -124,7 +126,13 @@ impl ToolPort for AgentTool {
                     "enum": ["sidecar", "blocking"],
                     "default": "sidecar"
                 },
-                "persona": {"type": "string"}
+                "persona": {"type": "string"},
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID from a prior agent result. \
+                        Pass this to continue a conversation with the same worker, \
+                        preserving its full history and persona."
+                }
             },
             "required": ["task_id", "title", "prompt", "owner_scope"]
         })
@@ -153,30 +161,49 @@ impl ToolPort for AgentTool {
             _ => return Err(PortError::Tool("invalid: criticality".to_string())),
         };
         let persona = args["persona"].as_str().map(ToString::to_string);
+        let resume_session_id = args["session_id"].as_str().map(ToString::to_string);
 
-        let task = WorkerTaskSpec {
-            task_id: task_id.clone(),
-            title,
-            prompt: prompt.clone(),
-            criticality,
-            owner_scope,
+        // When resuming an existing session, skip orchestrator validation
+        // (scope conflicts, task_id uniqueness) — we're continuing a conversation,
+        // not starting parallel work.
+        let worker_id = if resume_session_id.is_some() {
+            format!("resume-{task_id}")
+        } else {
+            // The orchestrator requires prompt to contain owner_scope.
+            let effective_prompt = if prompt.contains(&owner_scope) {
+                prompt.clone()
+            } else {
+                format!("{prompt}\n[scope: {owner_scope}]")
+            };
+
+            let task = WorkerTaskSpec {
+                task_id: task_id.clone(),
+                title,
+                prompt: effective_prompt,
+                criticality,
+                owner_scope,
+            };
+
+            let worker_ids = self
+                .orchestrator
+                .spawn_parallel(vec![task])
+                .await
+                .map_err(map_orchestration_error)?;
+
+            worker_ids
+                .into_iter()
+                .next()
+                .ok_or_else(|| PortError::Tool("spawn failed: missing worker id".to_string()))?
         };
-
-        let worker_ids = self
-            .orchestrator
-            .spawn_parallel(vec![task])
-            .await
-            .map_err(map_orchestration_error)?;
-
-        let worker_id = worker_ids
-            .into_iter()
-            .next()
-            .ok_or_else(|| PortError::Tool("spawn failed: missing worker id".to_string()))?;
 
         publish_worker_event(WorkerMonitorEvent {
             task_id: task_id.clone(),
             status: "Running".to_string(),
-            summary: Some("spawned by coordinator".to_string()),
+            summary: Some(if resume_session_id.is_some() {
+                "resuming session".to_string()
+            } else {
+                "spawned by coordinator".to_string()
+            }),
             timestamp: std::time::SystemTime::now(),
         });
 
@@ -194,7 +221,11 @@ impl ToolPort for AgentTool {
         let handle = tokio::spawn(async move {
             let cmd = AgentRunCommand::new(session_repo, provider).with_context(context_policy);
 
-            let on_delta = |_content: String| {};
+            let reply = Arc::new(std::sync::Mutex::new(String::new()));
+            let reply_clone = reply.clone();
+            let on_delta = move |content: String| {
+                reply_clone.lock().unwrap().push_str(&content);
+            };
             let tool_definitions = registry.definitions();
 
             let execute_tool = move |name: String,
@@ -214,7 +245,7 @@ impl ToolPort for AgentTool {
 
             let result = cmd
                 .run(
-                    None,
+                    resume_session_id,
                     persona,
                     prompt,
                     tool_definitions,
@@ -223,11 +254,19 @@ impl ToolPort for AgentTool {
                 )
                 .await;
 
+            let response = reply.lock().unwrap().clone();
+            // Truncate for the summary but keep enough to be useful.
+            let response_summary = if response.len() > 500 {
+                format!("{}...", &response[..response.floor_char_boundary(500)])
+            } else {
+                response
+            };
+
             let notification = match result {
                 Ok(session_id) => WorkerResultNotification {
                     task_id: task_id_for_worker,
                     status: WorkerStatus::Completed,
-                    summary: format!("worker session {} completed", session_id.0),
+                    summary: format!("[session_id={}] {}", session_id.0, response_summary),
                 },
                 Err(err) => WorkerResultNotification {
                     task_id: task_id_for_worker,

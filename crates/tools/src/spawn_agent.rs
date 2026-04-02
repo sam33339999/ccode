@@ -1,3 +1,4 @@
+use crate::worker_monitor::{publish_worker_event, WorkerMonitorEvent};
 use crate::ToolRegistry;
 use async_trait::async_trait;
 use ccode_application::commands::agent_run::{AgentRunCommand, ContextPolicy};
@@ -8,7 +9,10 @@ use ccode_ports::{
     PortError,
 };
 use serde_json::{json, Value};
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, OnceLock,
+};
 
 /// Tool that lets the agent delegate a sub-task to a child agent.
 ///
@@ -26,6 +30,7 @@ pub struct SpawnAgentTool {
     /// Filled in by bootstrap after the registry `Arc` is finalized.
     registry_cell: Arc<OnceLock<Arc<ToolRegistry>>>,
     context_policy: ContextPolicy,
+    task_seq: AtomicU64,
 }
 
 impl SpawnAgentTool {
@@ -42,6 +47,7 @@ impl SpawnAgentTool {
             session_repo,
             registry_cell: Arc::clone(&cell),
             context_policy,
+            task_seq: AtomicU64::new(0),
         };
         (tool, cell)
     }
@@ -60,7 +66,10 @@ impl ToolPort for SpawnAgentTool {
          Parameters:\n\
          - message: The task/prompt for the sub-agent (required)\n\
          - persona: Optional system prompt that defines the sub-agent's role \
-           (e.g. \"You are an expert in data analysis\")"
+           (e.g. \"You are an expert in data analysis\")\n\
+         - session_id: Optional session ID from a previous spawn_agent call. \
+           When provided, the sub-agent resumes that session with full conversation \
+           history, preserving its persona and context across multiple interactions."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -74,6 +83,12 @@ impl ToolPort for SpawnAgentTool {
                 "persona": {
                     "type": "string",
                     "description": "Optional system prompt / role for the sub-agent"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID from a prior spawn_agent result. \
+                        Pass this to continue a conversation with the same sub-agent, \
+                        preserving its full history and persona."
                 }
             },
             "required": ["message"]
@@ -86,10 +101,27 @@ impl ToolPort for SpawnAgentTool {
             .ok_or_else(|| PortError::Tool("missing: message".into()))?
             .to_string();
         let persona = args["persona"].as_str().map(|s| s.to_string());
+        let resume_session_id = args["session_id"].as_str().map(|s| s.to_string());
 
         let registry = self.registry_cell.get().ok_or_else(|| {
             PortError::Tool("spawn_agent: tool registry not yet initialized".into())
         })?;
+
+        let seq = self.task_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let task_id = format!("sub-agent-{seq}");
+
+        // Publish "Running" event so the TUI worker panel can track this sub-agent.
+        let summary_hint = if message.len() > 80 {
+            format!("{}...", &message[..message.floor_char_boundary(80)])
+        } else {
+            message.clone()
+        };
+        publish_worker_event(WorkerMonitorEvent {
+            task_id: task_id.clone(),
+            status: "Running".to_string(),
+            summary: Some(summary_hint),
+            timestamp: std::time::SystemTime::now(),
+        });
 
         let cmd = AgentRunCommand::new(Arc::clone(&self.session_repo), Arc::clone(&self.provider))
             .with_context(self.context_policy.clone());
@@ -122,23 +154,43 @@ impl ToolPort for SpawnAgentTool {
             })
         };
 
-        let session_id = cmd
+        let result = cmd
             .run(
-                None,
+                resume_session_id,
                 persona,
                 message,
                 tool_definitions,
                 &on_delta,
                 &execute_tool,
             )
-            .await
-            .map_err(|e| PortError::Tool(e.to_string()))?;
+            .await;
 
-        let response = reply.lock().unwrap().clone();
-        Ok(json!({
-            "session_id": session_id.0,
-            "response": response,
-        })
-        .to_string())
+        match result {
+            Ok(session_id) => {
+                let response = reply.lock().unwrap().clone();
+                publish_worker_event(WorkerMonitorEvent {
+                    task_id: task_id.clone(),
+                    status: "Completed".to_string(),
+                    summary: Some(format!("session {}", session_id.0)),
+                    timestamp: std::time::SystemTime::now(),
+                });
+                Ok(json!({
+                    "task_id": task_id,
+                    "session_id": session_id.0,
+                    "status": "Completed",
+                    "response": response,
+                })
+                .to_string())
+            }
+            Err(e) => {
+                publish_worker_event(WorkerMonitorEvent {
+                    task_id: task_id.clone(),
+                    status: "Failed".to_string(),
+                    summary: Some(e.to_string()),
+                    timestamp: std::time::SystemTime::now(),
+                });
+                Err(PortError::Tool(e.to_string()))
+            }
+        }
     }
 }

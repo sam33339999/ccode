@@ -27,7 +27,13 @@ fn prefix_translation_round_trips_cse_id() {
 #[test]
 fn classifies_http_error_variant() {
     let err = classify_status_error(500, "server exploded".to_string());
-    assert!(matches!(err, CcrClientError::Http(_)));
+    match err {
+        CcrClientError::Http(message) => {
+            assert!(message.contains("status 500"));
+            assert!(!message.contains("server exploded"));
+        }
+        other => panic!("expected http error, got {other:?}"),
+    }
 }
 
 #[test]
@@ -46,6 +52,19 @@ fn classifies_unauthorized_error_variant() {
 fn classifies_forbidden_error_variant() {
     let err = classify_status_error(403, "forbidden".to_string());
     assert!(matches!(err, CcrClientError::Forbidden));
+}
+
+#[test]
+fn status_error_mapping_does_not_leak_internal_body_for_client_errors() {
+    let err = classify_status_error(400, "trace_id=abc internal stack details".to_string());
+    match err {
+        CcrClientError::Http(message) => {
+            assert!(message.contains("status 400"));
+            assert!(!message.contains("trace_id=abc"));
+            assert!(!message.contains("stack details"));
+        }
+        other => panic!("expected http error, got {other:?}"),
+    }
 }
 
 #[test]

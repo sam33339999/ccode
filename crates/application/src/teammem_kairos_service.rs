@@ -207,13 +207,21 @@ fn detect_secret(content: &str) -> bool {
 }
 
 fn looks_like_openai_key(content: &str) -> bool {
-    content.split_whitespace().any(|token| {
-        if let Some(rest) = token.strip_prefix("sk-") {
-            rest.chars().all(|ch| ch.is_ascii_alphanumeric()) && rest.len() >= 20
-        } else {
-            false
+    let mut remaining = content;
+    while let Some(index) = remaining.find("sk-") {
+        let candidate = &remaining[index + 3..];
+        let tail: String = candidate
+            .chars()
+            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+            .collect();
+
+        if (tail.starts_with("proj-") && tail.len() >= "proj-".len() + 20) || tail.len() >= 20 {
+            return true;
         }
-    })
+
+        remaining = &candidate[tail.len()..];
+    }
+    false
 }
 
 #[cfg(test)]
@@ -289,6 +297,48 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             event,
             TeamMemAuditEvent::SecretSkipped { path_key } if path_key == "notes/secret.md"
+        )));
+    }
+
+    #[test]
+    fn secret_scan_covers_teammem_and_config_paths() {
+        let audit = Arc::new(RecordingAuditLog::default());
+        let service = TeamMemKairosService::new(
+            MockTeamMemBackend {
+                sync_results: Mutex::new(VecDeque::new()),
+            },
+            2,
+            audit.clone(),
+        );
+
+        let teammem_secret = "sk-proj-123456789012345678901234567890123456";
+        let payload = service.build_prompt_payload(&[
+            TeamMemEntry {
+                path_key: "TEAMMEM/notes.md".to_string(),
+                content: format!("token={teammem_secret}"),
+            },
+            TeamMemEntry {
+                path_key: "config/settings.toml".to_string(),
+                content: "ghp_123456789012345678901234567890123456".to_string(),
+            },
+            TeamMemEntry {
+                path_key: "notes/clean.md".to_string(),
+                content: "safe".to_string(),
+            },
+        ]);
+
+        assert!(!payload.contains(teammem_secret));
+        assert!(!payload.contains("ghp_123456789012345678901234567890123456"));
+        assert!(payload.contains("notes/clean.md: safe"));
+
+        let events = audit.events.lock().expect("poisoned");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TeamMemAuditEvent::SecretSkipped { path_key } if path_key == "TEAMMEM/notes.md"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            TeamMemAuditEvent::SecretSkipped { path_key } if path_key == "config/settings.toml"
         )));
     }
 

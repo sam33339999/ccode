@@ -37,11 +37,11 @@ pub enum ShellPolicy {
 impl Default for Permission {
     fn default() -> Self {
         Self {
-            fs_read: FsPolicy::Any,
-            fs_write: FsPolicy::Any,
-            shell: ShellPolicy::Any,
-            web_fetch: true,
-            browser: true,
+            fs_read: FsPolicy::None,
+            fs_write: FsPolicy::None,
+            shell: ShellPolicy::None,
+            web_fetch: false,
+            browser: false,
         }
     }
 }
@@ -52,6 +52,22 @@ impl ToolContext {
             cwd,
             permission: Permission::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_defaults_to_fail_closed() {
+        let permission = Permission::default();
+
+        assert!(matches!(permission.fs_read, FsPolicy::None));
+        assert!(matches!(permission.fs_write, FsPolicy::None));
+        assert!(matches!(permission.shell, ShellPolicy::None));
+        assert!(!permission.web_fetch);
+        assert!(!permission.browser);
     }
 }
 

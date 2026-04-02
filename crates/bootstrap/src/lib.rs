@@ -296,24 +296,36 @@ fn permission_from_sandbox(sandbox: Option<&ccode_config::schema::SandboxConfig>
     };
     Permission {
         fs_read: match s.fs_read.as_deref() {
-            Some("none") => FsPolicy::None,
+            Some("any") => FsPolicy::Any,
             Some("cwd") => FsPolicy::Cwd,
-            _ => FsPolicy::Any,
+            Some("none") | None => FsPolicy::None,
+            Some(_) => FsPolicy::None,
         },
         fs_write: match s.fs_write.as_deref() {
-            Some("none") => FsPolicy::None,
+            Some("any") => FsPolicy::Any,
             Some("cwd") => FsPolicy::Cwd,
-            _ => FsPolicy::Any,
+            Some("none") | None => FsPolicy::None,
+            Some(_) => FsPolicy::None,
         },
         shell: match s.shell.as_deref() {
-            Some("none") => ShellPolicy::None,
-            Some("any") | None => ShellPolicy::Any,
+            Some("any") => ShellPolicy::Any,
+            Some("none") | None => ShellPolicy::None,
             Some(list) => {
-                ShellPolicy::Allowlist(list.split(',').map(|c| c.trim().to_string()).collect())
+                let commands: Vec<String> = list
+                    .split(',')
+                    .map(|command| command.trim())
+                    .filter(|command| !command.is_empty())
+                    .map(ToString::to_string)
+                    .collect();
+                if commands.is_empty() {
+                    ShellPolicy::None
+                } else {
+                    ShellPolicy::Allowlist(commands)
+                }
             }
         },
-        web_fetch: s.web_fetch.unwrap_or(true),
-        browser: s.browser.unwrap_or(true),
+        web_fetch: s.web_fetch.unwrap_or(false),
+        browser: s.browser.unwrap_or(false),
     }
 }
 
@@ -327,4 +339,41 @@ pub enum WireError {
     Storage(String),
     #[error("mcp runtime error: {0}")]
     McpRuntime(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ccode_config::schema::SandboxConfig;
+
+    #[test]
+    fn sandbox_defaults_to_fail_closed_when_missing() {
+        let permission = permission_from_sandbox(None);
+
+        assert!(matches!(permission.fs_read, FsPolicy::None));
+        assert!(matches!(permission.fs_write, FsPolicy::None));
+        assert!(matches!(permission.shell, ShellPolicy::None));
+        assert!(!permission.web_fetch);
+        assert!(!permission.browser);
+    }
+
+    #[test]
+    fn sandbox_invalid_values_fail_closed() {
+        let sandbox = SandboxConfig {
+            cwd: None,
+            fs_read: Some("unexpected".to_string()),
+            fs_write: Some("unexpected".to_string()),
+            shell: Some("".to_string()),
+            web_fetch: None,
+            browser: None,
+        };
+
+        let permission = permission_from_sandbox(Some(&sandbox));
+
+        assert!(matches!(permission.fs_read, FsPolicy::None));
+        assert!(matches!(permission.fs_write, FsPolicy::None));
+        assert!(matches!(permission.shell, ShellPolicy::None));
+        assert!(!permission.web_fetch);
+        assert!(!permission.browser);
+    }
 }

@@ -262,11 +262,11 @@ fn should_retry_status(status: StatusCode) -> bool {
     status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
 }
 
-pub fn classify_status_error(status: u16, body: String) -> CcrClientError {
+pub fn classify_status_error(status: u16, _body: String) -> CcrClientError {
     match status {
         401 => CcrClientError::Unauthorized,
         403 => CcrClientError::Forbidden,
-        _ => CcrClientError::Http(format!("status {status}: {body}")),
+        _ => CcrClientError::Http(format!("status {status}")),
     }
 }
 

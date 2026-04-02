@@ -54,11 +54,11 @@ default_model = "claude-opus-4-5"
 
 # [sandbox]
 # cwd      = "~/projects/my-app"   # agent 預設工作目錄（None = 啟動時 cwd）
-# fs_read  = "any"                 # "any" | "cwd" | "none"
-# fs_write = "any"                 # "any" | "cwd" | "none"
-# shell    = "any"                 # "any" | "none" | "git,cargo,ls"（逗號分隔 allowlist）
-# web_fetch = true
-# browser  = true
+# fs_read  = "none"                # 預設 deny（可設 "any" | "cwd" | "none"）
+# fs_write = "none"                # 預設 deny（可設 "any" | "cwd" | "none"）
+# shell    = "none"                # 預設 deny（可設 "any" | "none" | "git,cargo,ls" allowlist）
+# web_fetch = false                # 預設 deny
+# browser  = false                 # 預設 deny
 
 # ── MCP Servers ────────────────────────────────────────────────────────────────
 # 啟動後會對每個 server 呼叫 tools/list，並把回傳工具註冊到工具表中。

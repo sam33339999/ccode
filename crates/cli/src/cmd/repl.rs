@@ -4,6 +4,8 @@ use rustyline::{DefaultEditor, error::ReadlineError};
 use std::collections::HashSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
+
+use super::output::{StreamFormatter, classify_error, error_category_label};
 #[derive(Args)]
 pub struct ReplArgs {
     /// Resume an existing session by ID
@@ -59,6 +61,7 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
         let mut editor = DefaultEditor::new()?;
         // Persists across all turns within this REPL session
         let always_allowed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let formatter: Arc<Mutex<StreamFormatter>> = Arc::new(Mutex::new(StreamFormatter::new()));
         // Persona is applied only on the first turn (new session); subsequent turns pass None
         let mut persona_once: Option<String> = persona;
 
@@ -78,6 +81,7 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                     let tool_ctx_clone = tool_ctx.clone();
                     let tools = tool_definitions.clone();
                     let always_allowed_clone = always_allowed.clone();
+                    let formatter_clone = formatter.clone();
 
                     let execute_tool = move |name: String,
                                              tool_args: serde_json::Value|
@@ -87,7 +91,13 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                         let registry = registry_clone.clone();
                         let tool_ctx = tool_ctx_clone.clone();
                         let always_allowed = always_allowed_clone.clone();
+                        let formatter = formatter_clone.clone();
                         Box::pin(async move {
+                            let start_line =
+                                formatter.lock().unwrap().tool_start_line(&name, &tool_args);
+                            eprint!("{start_line}");
+                            let _ = std::io::stderr().flush();
+
                             let is_always = always_allowed.lock().unwrap().contains(&name);
                             if !no_confirm && !is_always {
                                 eprint!(
@@ -105,15 +115,28 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                                     _ => {}
                                 }
                             }
-                            registry
+                            let result = registry
                                 .execute(&name, tool_args, &tool_ctx)
                                 .await
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| e.to_string());
+
+                            let result_line =
+                                formatter.lock().unwrap().tool_result_line(&name, &result);
+                            eprint!("{result_line}");
+                            let _ = std::io::stderr().flush();
+
+                            if let Err(err) = &result {
+                                let category = error_category_label(classify_error(err));
+                                eprintln!("[error:{category}] {err}");
+                            }
+
+                            result
                         })
                     };
 
                     print!("Agent: ");
                     let _ = std::io::stdout().flush();
+                    let formatter_for_delta = formatter.clone();
 
                     let sid = handle.block_on(cmd.run(
                         session_id.clone(),
@@ -121,7 +144,11 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                         input,
                         tools,
                         &(|content: String| {
-                            print!("{}", content);
+                            let rendered = formatter_for_delta
+                                .lock()
+                                .unwrap()
+                                .push_delta(content.as_str());
+                            print!("{}", rendered);
                             let _ = std::io::stdout().flush();
                         }),
                         &execute_tool,

@@ -4,6 +4,8 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use super::output::{StreamFormatter, classify_error, error_category_label};
+
 #[derive(Args)]
 pub struct AgentArgs {
     /// Resume an existing session by ID
@@ -53,15 +55,22 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
     // Track which tools the user has permanently allowed
     let always_allowed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     let no_confirm = args.no_confirm;
+    let formatter = Arc::new(Mutex::new(StreamFormatter::new()));
 
-    let on_delta = |content: String| {
-        print!("{}", content);
+    let on_delta_formatter = Arc::clone(&formatter);
+    let on_delta = move |content: String| {
+        let rendered = on_delta_formatter
+            .lock()
+            .unwrap()
+            .push_delta(content.as_str());
+        print!("{}", rendered);
         let _ = std::io::stdout().flush();
     };
 
     let registry = Arc::new(registry);
     let always_allowed_clone = always_allowed.clone();
     let tool_ctx = Arc::new(tool_ctx);
+    let tool_formatter = Arc::clone(&formatter);
 
     let execute_tool = move |name: String,
                              args: serde_json::Value|
@@ -71,8 +80,13 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
         let registry = registry.clone();
         let always_allowed = always_allowed_clone.clone();
         let tool_ctx = tool_ctx.clone();
+        let formatter = tool_formatter.clone();
         let no_confirm = no_confirm;
         Box::pin(async move {
+            let start_line = formatter.lock().unwrap().tool_start_line(&name, &args);
+            eprint!("{start_line}");
+            let _ = std::io::stderr().flush();
+
             // Check if already in always-allowed set
             let is_always = always_allowed.lock().unwrap().contains(&name);
 
@@ -93,10 +107,21 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
                 }
             }
 
-            registry
+            let result = registry
                 .execute(&name, args, &tool_ctx)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string());
+
+            let result_line = formatter.lock().unwrap().tool_result_line(&name, &result);
+            eprint!("{result_line}");
+            let _ = std::io::stderr().flush();
+
+            if let Err(err) = &result {
+                let category = error_category_label(classify_error(err));
+                eprintln!("[error:{category}] {err}");
+            }
+
+            result
         })
     };
 

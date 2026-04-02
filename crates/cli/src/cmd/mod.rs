@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod cron;
 pub mod health;
+pub mod output;
 pub mod repl;
 pub mod sessions;
 

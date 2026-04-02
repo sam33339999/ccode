@@ -1,6 +1,7 @@
 mod cmd;
 
 use clap::Parser;
+use cmd::output::{classify_error, error_category_label};
 
 #[derive(Parser)]
 #[command(name = "ccode", version, about = "ccode — AI agent CLI")]
@@ -19,7 +20,9 @@ async fn main() {
 
     let cli = Cli::parse();
     if let Err(e) = cmd::run(cli.command).await {
-        eprintln!("error: {e}");
+        let message = e.to_string();
+        let category = error_category_label(classify_error(&message));
+        eprintln!("[error:{category}] {message}");
         std::process::exit(1);
     }
 }

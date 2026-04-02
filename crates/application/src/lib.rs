@@ -6,6 +6,7 @@ pub mod multi_agent_orchestrator_service;
 pub mod queries;
 pub mod remote_session_service;
 pub mod spec_contracts;
+pub mod teammem_kairos_service;
 pub mod ultraplan_service;
 
 #[cfg(test)]

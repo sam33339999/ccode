@@ -160,3 +160,65 @@ fn format_tool_result(result: &Value) -> String {
 
     result.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ccode_mcp_runtime::contracts::{DefaultMcpCapabilityPolicy, McpCapabilityPolicy};
+
+    #[tokio::test]
+    async fn privileged_capability_cannot_be_enabled_from_generic_registration() {
+        let policy = DefaultMcpCapabilityPolicy::new(true, true);
+        let servers = vec![McpServerLaunch {
+            name: "generic-mcp".to_string(),
+            command: "/definitely/not/used".to_string(),
+            args: Vec::new(),
+            declared_capabilities: vec![CapabilityLevel::Standard],
+            enable_computer_use: true,
+        }];
+
+        let result = discover_mcp_tools(&servers, &policy, true).await;
+        assert!(
+            result.is_err(),
+            "generic registration must not negotiate privileged mode"
+        );
+        let err = result.err().expect("error should be present");
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("mcp policy rejected server"));
+        assert!(rendered.contains("privileged capability denied"));
+    }
+
+    #[tokio::test]
+    async fn policy_failure_prevents_spawn_side_effects() {
+        struct DenyPolicy;
+        impl McpCapabilityPolicy for DenyPolicy {
+            fn validate_server_name(&self, _name: &str) -> Result<(), McpPolicyError> {
+                Err(McpPolicyError::ReservedServerName)
+            }
+
+            fn capability_level(&self, _server: &McpServerRef) -> CapabilityLevel {
+                CapabilityLevel::Standard
+            }
+        }
+
+        let servers = vec![McpServerLaunch {
+            name: "blocked".to_string(),
+            command: "/definitely/does/not/exist".to_string(),
+            args: Vec::new(),
+            declared_capabilities: vec![CapabilityLevel::Standard],
+            enable_computer_use: false,
+        }];
+
+        let result = discover_mcp_tools(&servers, &DenyPolicy, true).await;
+        assert!(
+            result.is_err(),
+            "policy should short-circuit before transport spawn"
+        );
+        let err = result.err().expect("error should be present");
+        let rendered = err.to_string();
+
+        assert!(rendered.contains("mcp policy rejected server"));
+        assert!(!rendered.contains("spawn failed"));
+    }
+}

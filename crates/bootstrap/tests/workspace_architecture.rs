@@ -97,7 +97,7 @@ fn workspace_structure_and_dependency_rules_hold() {
     assert_eq!(
         deps_of("ccode-application"),
         HashSet::from(["ccode-domain".to_string(), "ccode-ports".to_string(),]),
-        "application must depend only on ports + domain"
+        "application must depend only on ports + domain (Bridge x Ultraplan remote session APIs must flow through app-services contracts)"
     );
 
     assert_eq!(

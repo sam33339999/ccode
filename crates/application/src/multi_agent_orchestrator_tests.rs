@@ -144,6 +144,77 @@ async fn synthesize_summary_aggregates_notifications() {
 }
 
 #[tokio::test]
+async fn mixed_outcomes_produce_deterministic_summary_and_traceable_actions() {
+    let orchestrator =
+        ApplicationMultiAgentOrchestrator::new(true, Arc::new(MockWorkerRuntime::default()));
+    orchestrator
+        .spawn_parallel(vec![
+            sidecar_task("alpha", "scope/alpha"),
+            sidecar_task("beta", "scope/beta"),
+            sidecar_task("gamma", "scope/gamma"),
+        ])
+        .await
+        .expect("spawn should succeed");
+
+    orchestrator
+        .handle_notification(WorkerResultNotification {
+            task_id: "alpha".to_string(),
+            status: WorkerStatus::Completed,
+            summary: "completed cleanly".to_string(),
+        })
+        .await
+        .expect("notification should be accepted");
+    orchestrator
+        .handle_notification(WorkerResultNotification {
+            task_id: "beta".to_string(),
+            status: WorkerStatus::Failed,
+            summary: "build failed".to_string(),
+        })
+        .await
+        .expect("notification should be accepted");
+    orchestrator
+        .handle_notification(WorkerResultNotification {
+            task_id: "gamma".to_string(),
+            status: WorkerStatus::Cancelled,
+            summary: "cancelled by policy".to_string(),
+        })
+        .await
+        .expect("notification should be accepted");
+
+    let first = orchestrator
+        .synthesize_summary(&["alpha".to_string(), "beta".to_string(), "gamma".to_string()])
+        .await
+        .expect("synthesis should succeed");
+    let second = orchestrator
+        .synthesize_summary(&["alpha".to_string(), "beta".to_string(), "gamma".to_string()])
+        .await
+        .expect("synthesis should succeed");
+
+    assert_eq!(first.completed, 1);
+    assert_eq!(first.failed, 1);
+    assert_eq!(first.key_findings, second.key_findings);
+    assert_eq!(first.next_actions, second.next_actions);
+    assert!(
+        first
+            .key_findings
+            .iter()
+            .all(|line| line.contains("alpha") || line.contains("beta") || line.contains("gamma"))
+    );
+    assert!(
+        first
+            .next_actions
+            .iter()
+            .any(|line| line.contains("beta") && line.contains("retry"))
+    );
+    assert!(
+        first
+            .next_actions
+            .iter()
+            .any(|line| line.contains("gamma") && line.contains("rescope"))
+    );
+}
+
+#[tokio::test]
 async fn stop_is_idempotent_for_terminal_state() {
     let runtime = Arc::new(MockWorkerRuntime::default());
     let orchestrator = ApplicationMultiAgentOrchestrator::new(true, runtime.clone());

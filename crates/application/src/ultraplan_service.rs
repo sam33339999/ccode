@@ -22,6 +22,7 @@ struct ActiveSession {
 struct LocalState {
     launching: bool,
     active: Option<ActiveSession>,
+    revision: u64,
 }
 
 pub struct DefaultUltraplanService<R> {
@@ -83,6 +84,7 @@ impl<R> DefaultUltraplanService<R> {
     async fn set_active(&self, active: Option<ActiveSession>) {
         let mut state = self.state.lock().await;
         state.active = active;
+        state.revision = state.revision.wrapping_add(1);
     }
 
     async fn apply_launch_guard(&self, policy: UltraplanPolicy) -> Result<(), UltraplanError> {
@@ -205,13 +207,16 @@ where
             return Err(UltraplanError::DisabledByPolicy);
         }
 
-        let from_phase = {
+        let (from_phase, revision) = {
             let state = self.state.lock().await;
-            state
-                .active
-                .as_ref()
-                .filter(|active| active.session_id == session_id)
-                .map_or(UltraplanPhase::Polling, |active| active.phase)
+            (
+                state
+                    .active
+                    .as_ref()
+                    .filter(|active| active.session_id == session_id)
+                    .map_or(UltraplanPhase::Polling, |active| active.phase),
+                state.revision,
+            )
         };
 
         let next_phase = self.runtime.poll_phase(session_id).await?;
@@ -227,11 +232,14 @@ where
         if Self::is_terminal(resolved_phase) {
             self.set_active(None).await;
         } else {
-            self.set_active(Some(ActiveSession {
-                session_id: session_id.to_owned(),
-                phase: resolved_phase,
-            }))
-            .await;
+            let mut state = self.state.lock().await;
+            if state.revision == revision {
+                state.active = Some(ActiveSession {
+                    session_id: session_id.to_owned(),
+                    phase: resolved_phase,
+                });
+                state.revision = state.revision.wrapping_add(1);
+            }
         }
 
         Ok(resolved_phase)
@@ -251,6 +259,7 @@ where
                 .is_some_and(|active| active.session_id == session_id)
             {
                 state.active = None;
+                state.revision = state.revision.wrapping_add(1);
             }
         }
 
@@ -273,6 +282,7 @@ where
 mod tests {
     use super::*;
     use std::{collections::VecDeque, sync::Arc};
+    use tokio::sync::Notify;
 
     #[derive(Default)]
     struct MockUltraplanRuntime {
@@ -682,5 +692,79 @@ mod tests {
             .await
             .expect("routing succeeds");
         assert!(routed.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_stop_and_poll_does_not_restore_active_marker() {
+        struct RaceRuntime {
+            poll_release: Arc<Notify>,
+            poll_calls: Arc<Mutex<u8>>,
+        }
+
+        #[async_trait]
+        impl UltraplanRuntime for RaceRuntime {
+            async fn launch_session(&self, _prompt: &str) -> Result<String, UltraplanError> {
+                Ok("session-race".to_string())
+            }
+
+            async fn poll_phase(
+                &self,
+                _session_id: &str,
+            ) -> Result<UltraplanPhase, UltraplanError> {
+                let mut calls = self.poll_calls.lock().await;
+                *calls += 1;
+                let call = *calls;
+                drop(calls);
+
+                if call == 1 {
+                    return Ok(UltraplanPhase::Polling);
+                }
+
+                self.poll_release.notified().await;
+                Ok(UltraplanPhase::AwaitingInput)
+            }
+
+            async fn stop_session(&self, _session_id: &str) -> Result<(), UltraplanError> {
+                self.poll_release.notify_waiters();
+                Ok(())
+            }
+
+            async fn archive_session(&self, _session_id: &str) -> Result<(), UltraplanError> {
+                Ok(())
+            }
+        }
+
+        let runtime = RaceRuntime {
+            poll_release: Arc::new(Notify::new()),
+            poll_calls: Arc::new(Mutex::new(0)),
+        };
+        let service = Arc::new(DefaultUltraplanService::new(runtime, true));
+        service
+            .launch("prompt", policy())
+            .await
+            .expect("launch succeeds");
+
+        let poll = {
+            let service = Arc::clone(&service);
+            tokio::spawn(async move { service.poll("session-race").await })
+        };
+        tokio::task::yield_now().await;
+        let stop = {
+            let service = Arc::clone(&service);
+            tokio::spawn(async move { service.stop("session-race").await })
+        };
+
+        let poll_result = poll.await.expect("poll task join");
+        let stop_result = stop.await.expect("stop task join");
+
+        assert_eq!(
+            poll_result.expect("poll result"),
+            UltraplanPhase::AwaitingInput
+        );
+        stop_result.expect("stop result");
+        assert!(
+            service.active_marker().await.is_none(),
+            "active marker must remain cleared after stop"
+        );
     }
 }

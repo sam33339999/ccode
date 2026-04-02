@@ -32,8 +32,7 @@ pub enum Action {
 }
 
 pub async fn run(action: Action) -> anyhow::Result<()> {
-    let state = wire_from_config_with_cwd(std::env::current_dir().ok())
-        .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
+    let state = wire_from_config_with_cwd(std::env::current_dir().ok())?;
 
     match action {
         Action::List { limit } => list(&state, limit).await,

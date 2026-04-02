@@ -1,3 +1,4 @@
+use anyhow::Context;
 use ccode_application::commands::agent_run::AgentRunCommand;
 use clap::Args;
 use std::collections::HashSet;
@@ -5,8 +6,8 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use super::output::{
-    StreamFormatter, ToolConfirmationDecision, classify_error, confirmation_prompt,
-    error_category_label, parse_confirmation_input,
+    ErrorContext, StreamFormatter, ToolConfirmationDecision, confirmation_prompt,
+    parse_confirmation_input, render_error_message,
 };
 
 #[derive(Args)]
@@ -26,8 +27,7 @@ pub struct AgentArgs {
 }
 
 pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
-    let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok())
-        .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
+    let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok())?;
 
     let provider = state
         .provider
@@ -39,6 +39,10 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
         provider.name(),
         provider.default_model()
     );
+    let provider_name_for_errors = provider.name().to_string();
+    let session_for_errors = args.session.clone().unwrap_or_else(|| "new".to_string());
+    let provider_name_for_tools = provider_name_for_errors.clone();
+    let session_for_tools = session_for_errors.clone();
 
     let tool_ctx = state.tool_ctx();
     let tool_definitions = state.tool_registry.definitions();
@@ -85,6 +89,8 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
         let tool_ctx = tool_ctx.clone();
         let formatter = tool_formatter.clone();
         let no_confirm = no_confirm;
+        let provider_name_for_errors = provider_name_for_tools.clone();
+        let session_for_errors = session_for_tools.clone();
         Box::pin(async move {
             let start_line = formatter.lock().unwrap().tool_start_line(&name, &args);
             eprint!("{start_line}");
@@ -118,8 +124,16 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
             let _ = std::io::stderr().flush();
 
             if let Err(err) = &result {
-                let category = error_category_label(classify_error(err));
-                eprintln!("[error:{category}] {err}");
+                eprintln!(
+                    "{}",
+                    render_error_message(
+                        err,
+                        &ErrorContext {
+                            session_id: session_for_errors.clone(),
+                            provider_name: provider_name_for_errors.clone(),
+                        }
+                    )
+                );
             }
 
             result
@@ -135,7 +149,13 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
             &on_delta,
             &execute_tool,
         )
-        .await?;
+        .await
+        .with_context(|| {
+            format!(
+                "error_context provider={} session={}",
+                provider_name_for_errors, session_for_errors
+            )
+        })?;
 
     println!();
     eprintln!("[session: {}]", session_id);

@@ -1,20 +1,92 @@
+use anyhow::Error as AnyError;
+use ccode_application::error::AppError;
+use ccode_bootstrap::WireError;
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
+    Policy,
     Auth,
-    Network,
-    RateLimit,
-    Other,
+    Transport,
+    State,
+    Validation,
 }
 
 pub fn error_category_label(category: ErrorCategory) -> &'static str {
     match category {
+        ErrorCategory::Policy => "policy",
         ErrorCategory::Auth => "auth",
-        ErrorCategory::Network => "network",
-        ErrorCategory::RateLimit => "rate_limit",
-        ErrorCategory::Other => "other",
+        ErrorCategory::Transport => "transport",
+        ErrorCategory::State => "state",
+        ErrorCategory::Validation => "validation",
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ErrorContext {
+    pub session_id: String,
+    pub provider_name: String,
+}
+
+impl ErrorContext {
+    pub fn unknown() -> Self {
+        Self {
+            session_id: "unknown".to_string(),
+            provider_name: "unknown".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ErrorEnvelope {
+    pub category: ErrorCategory,
+    pub message: String,
+    pub suggestion: Option<String>,
+    pub correlation_id: String,
+    pub session_id: String,
+    pub provider_name: String,
+}
+
+impl ErrorEnvelope {
+    fn new(
+        category: ErrorCategory,
+        message: impl Into<String>,
+        suggestion: Option<String>,
+        ctx: &ErrorContext,
+    ) -> Self {
+        Self {
+            category,
+            message: message.into(),
+            suggestion,
+            correlation_id: next_correlation_id(),
+            session_id: ctx.session_id.clone(),
+            provider_name: ctx.provider_name.clone(),
+        }
+    }
+
+    pub fn render(&self) -> String {
+        let category = error_category_label(self.category);
+        let mut out = format!("[error:{category}] {}", self.message);
+        if let Some(suggestion) = &self.suggestion {
+            out.push_str(&format!(" Hint: {suggestion}"));
+        }
+        out.push_str(&format!(
+            " [correlation_id:{} session_id:{} provider:{}]",
+            self.correlation_id, self.session_id, self.provider_name
+        ));
+        out
+    }
+}
+
+pub fn render_error(error: &AnyError, ctx: &ErrorContext) -> String {
+    let resolved_ctx = resolve_context(error, ctx);
+    classify_anyhow_error(error, &resolved_ctx).render()
+}
+
+pub fn render_error_message(message: &str, ctx: &ErrorContext) -> String {
+    classify_message_into_envelope(message, ctx).render()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +199,16 @@ pub fn parse_confirmation_input(input: &str) -> ToolConfirmationDecision {
 
 pub fn classify_error(message: &str) -> ErrorCategory {
     let m = message.to_ascii_lowercase();
+    if m.contains("timed out")
+        || m.contains("timeout")
+        || m.contains("connection")
+        || m.contains("dns")
+        || m.contains("network")
+        || m.contains("unreachable")
+        || m.contains("temporarily unavailable")
+    {
+        return ErrorCategory::Transport;
+    }
     if m.contains("401")
         || m.contains("403")
         || m.contains("unauthorized")
@@ -136,24 +218,29 @@ pub fn classify_error(message: &str) -> ErrorCategory {
     {
         return ErrorCategory::Auth;
     }
-    if m.contains("429")
-        || m.contains("rate limit")
-        || m.contains("too many requests")
-        || m.contains("quota")
+    if m.contains("permission denied")
+        || m.contains("policy")
+        || m.contains("denied")
+        || m.contains("forbidden by")
     {
-        return ErrorCategory::RateLimit;
+        return ErrorCategory::Policy;
     }
-    if m.contains("timed out")
-        || m.contains("timeout")
-        || m.contains("connection")
-        || m.contains("dns")
-        || m.contains("network")
-        || m.contains("unreachable")
-        || m.contains("temporarily unavailable")
+    if m.contains("invalid")
+        || m.contains("parse error")
+        || m.contains("missing required")
+        || m.contains("bad request")
     {
-        return ErrorCategory::Network;
+        return ErrorCategory::Validation;
     }
-    ErrorCategory::Other
+    if m.contains("not found")
+        || m.contains("invalid state")
+        || m.contains("already")
+        || m.contains("no llm provider configured")
+        || m.contains("not configured")
+    {
+        return ErrorCategory::State;
+    }
+    ErrorCategory::State
 }
 
 fn summarize_arg_value(v: &Value) -> String {
@@ -169,6 +256,199 @@ fn summarize_arg_value(v: &Value) -> String {
     } else {
         raw
     }
+}
+
+fn classify_anyhow_error(error: &AnyError, ctx: &ErrorContext) -> ErrorEnvelope {
+    if let Some(wire) = find_in_chain::<WireError>(error) {
+        return classify_wire_error(wire, ctx);
+    }
+    if let Some(app) = find_in_chain::<AppError>(error) {
+        return classify_app_error(app, ctx);
+    }
+    classify_message_into_envelope(&error.to_string(), ctx)
+}
+
+fn resolve_context(error: &AnyError, fallback: &ErrorContext) -> ErrorContext {
+    for cause in error.chain() {
+        if let Some(text) = parse_error_context(cause.to_string().as_str()) {
+            return text;
+        }
+    }
+    fallback.clone()
+}
+
+fn parse_error_context(text: &str) -> Option<ErrorContext> {
+    let prefix = "error_context ";
+    if !text.starts_with(prefix) {
+        return None;
+    }
+    let mut session_id = None;
+    let mut provider_name = None;
+    for part in text[prefix.len()..].split_whitespace() {
+        if let Some((k, v)) = part.split_once('=') {
+            match k {
+                "session" => session_id = Some(v.to_string()),
+                "provider" => provider_name = Some(v.to_string()),
+                _ => {}
+            }
+        }
+    }
+    Some(ErrorContext {
+        session_id: session_id.unwrap_or_else(|| "unknown".to_string()),
+        provider_name: provider_name.unwrap_or_else(|| "unknown".to_string()),
+    })
+}
+
+fn classify_wire_error(error: &WireError, ctx: &ErrorContext) -> ErrorEnvelope {
+    match error {
+        WireError::Config(config_error) => {
+            classify_message_into_envelope(&config_error.to_string(), ctx)
+        }
+        WireError::Provider(msg) => classify_provider_error_message(msg, ctx),
+        WireError::Storage(_) => ErrorEnvelope::new(
+            ErrorCategory::State,
+            "Local storage is unavailable.",
+            Some("Check filesystem permissions and local disk state.".to_string()),
+            ctx,
+        ),
+    }
+}
+
+fn classify_app_error(error: &AppError, ctx: &ErrorContext) -> ErrorEnvelope {
+    match error {
+        AppError::Port(port_error) => {
+            let text = port_error.to_string();
+            if let Some(provider_message) = text.strip_prefix("provider error: ") {
+                return classify_provider_error_message(provider_message, ctx);
+            }
+            classify_message_into_envelope(&text, ctx)
+        }
+        AppError::Domain(domain_error) => {
+            classify_message_into_envelope(&domain_error.to_string(), ctx)
+        }
+    }
+}
+
+fn classify_message_into_envelope(message: &str, ctx: &ErrorContext) -> ErrorEnvelope {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("no llm provider configured")
+        || lower.contains("not configured")
+        || lower.contains("missing api_key")
+        || lower.contains("missing required field")
+    {
+        return ErrorEnvelope::new(
+            ErrorCategory::State,
+            "No provider configuration was found.",
+            Some(
+                "Copy settings from ./config.example.toml and set your API key (for example OPENROUTER_API_KEY).".to_string(),
+            ),
+            ctx,
+        );
+    }
+
+    match classify_error(message) {
+        ErrorCategory::Auth => ErrorEnvelope::new(
+            ErrorCategory::Auth,
+            "Authentication failed.",
+            Some(
+                "Check your API key configuration and environment variables (see ./config.example.toml)."
+                    .to_string(),
+            ),
+            ctx,
+        ),
+        ErrorCategory::Transport => ErrorEnvelope::new(
+            ErrorCategory::Transport,
+            "Network request failed.",
+            Some("Check your internet connectivity and retry.".to_string()),
+            ctx,
+        ),
+        ErrorCategory::Policy => ErrorEnvelope::new(
+            ErrorCategory::Policy,
+            "Operation blocked by policy.",
+            None,
+            ctx,
+        ),
+        ErrorCategory::Validation => ErrorEnvelope::new(
+            ErrorCategory::Validation,
+            "Input or configuration is invalid.",
+            Some("Review command arguments and configuration values.".to_string()),
+            ctx,
+        ),
+        ErrorCategory::State => {
+            if lower.contains("not found") {
+                ErrorEnvelope::new(
+                    ErrorCategory::State,
+                    "Requested resource was not found.",
+                    None,
+                    ctx,
+                )
+            } else if lower.contains("invalid state") {
+                ErrorEnvelope::new(
+                    ErrorCategory::State,
+                    "Operation is not allowed in the current state.",
+                    None,
+                    ctx,
+                )
+            } else {
+                ErrorEnvelope::new(
+                    ErrorCategory::State,
+                    "Unexpected internal error occurred.",
+                    Some("Retry the command. If it persists, report the correlation ID.".to_string()),
+                    ctx,
+                )
+            }
+        }
+    }
+}
+
+fn classify_provider_error_message(message: &str, ctx: &ErrorContext) -> ErrorEnvelope {
+    // Never surface raw remote endpoint details in user-facing output.
+    match classify_error(message) {
+        ErrorCategory::Auth => ErrorEnvelope::new(
+            ErrorCategory::Auth,
+            "Provider authentication failed.",
+            Some(
+                "Check your API key configuration and provider credentials (see ./config.example.toml)."
+                    .to_string(),
+            ),
+            ctx,
+        ),
+        ErrorCategory::Transport => ErrorEnvelope::new(
+            ErrorCategory::Transport,
+            "Provider request failed due to network transport.",
+            Some("Check connectivity and retry.".to_string()),
+            ctx,
+        ),
+        ErrorCategory::Validation => ErrorEnvelope::new(
+            ErrorCategory::Validation,
+            "Provider rejected the request payload.",
+            Some("Review request inputs and model settings.".to_string()),
+            ctx,
+        ),
+        _ => ErrorEnvelope::new(
+            ErrorCategory::State,
+            "Provider request failed.",
+            Some("Retry later or switch provider configuration.".to_string()),
+            ctx,
+        ),
+    }
+}
+
+fn find_in_chain<T>(error: &AnyError) -> Option<&T>
+where
+    T: std::error::Error + 'static,
+{
+    error.chain().find_map(|cause| cause.downcast_ref::<T>())
+}
+
+fn next_correlation_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("cid-{ts_ms:016x}-{seq:08x}")
 }
 
 #[cfg(test)]
@@ -259,21 +539,29 @@ mod tests {
         assert_eq!(classify_error("HTTP 401 unauthorized"), ErrorCategory::Auth);
         assert_eq!(
             classify_error("connection timed out while sending request"),
-            ErrorCategory::Network
+            ErrorCategory::Transport
         );
         assert_eq!(
-            classify_error("HTTP 429 too many requests"),
-            ErrorCategory::RateLimit
+            classify_error("permission denied by policy"),
+            ErrorCategory::Policy
         );
-        assert_eq!(classify_error("some other failure"), ErrorCategory::Other);
+        assert_eq!(
+            classify_error("parse error: invalid config"),
+            ErrorCategory::Validation
+        );
+        assert_eq!(classify_error("session not found"), ErrorCategory::State);
     }
 
     #[test]
     fn error_category_labels_are_stable() {
+        assert_eq!(error_category_label(ErrorCategory::Policy), "policy");
         assert_eq!(error_category_label(ErrorCategory::Auth), "auth");
-        assert_eq!(error_category_label(ErrorCategory::Network), "network");
-        assert_eq!(error_category_label(ErrorCategory::RateLimit), "rate_limit");
-        assert_eq!(error_category_label(ErrorCategory::Other), "other");
+        assert_eq!(error_category_label(ErrorCategory::Transport), "transport");
+        assert_eq!(error_category_label(ErrorCategory::State), "state");
+        assert_eq!(
+            error_category_label(ErrorCategory::Validation),
+            "validation"
+        );
     }
 
     #[test]
@@ -306,5 +594,51 @@ mod tests {
             parse_confirmation_input("a"),
             ToolConfirmationDecision::AllowAlways
         );
+    }
+
+    #[test]
+    fn rendered_envelope_contains_correlation_and_context() {
+        let rendered = render_error_message(
+            "connection timeout",
+            &ErrorContext {
+                session_id: "s-123".to_string(),
+                provider_name: "openrouter".to_string(),
+            },
+        );
+        assert!(rendered.contains("[error:transport]"));
+        assert!(rendered.contains("correlation_id:"));
+        assert!(rendered.contains("session_id:s-123"));
+        assert!(rendered.contains("provider:openrouter"));
+    }
+
+    #[test]
+    fn provider_error_is_sanitized_and_no_remote_details_are_leaked() {
+        let rendered = render_error_message(
+            "provider error: HTTP 500: backend trace=abc123, db password=secret",
+            &ErrorContext {
+                session_id: "unknown".to_string(),
+                provider_name: "router".to_string(),
+            },
+        );
+
+        assert!(rendered.contains("[error:state]"));
+        assert!(!rendered.contains("trace=abc123"));
+        assert!(!rendered.contains("password=secret"));
+    }
+
+    #[test]
+    fn missing_config_points_to_example_file() {
+        let rendered = render_error_message("no LLM provider configured", &ErrorContext::unknown());
+        assert!(rendered.contains("[error:state]"));
+        assert!(rendered.contains("config.example.toml"));
+    }
+
+    #[test]
+    fn render_error_reads_context_from_error_chain() {
+        let err = anyhow::anyhow!("root failure")
+            .context("error_context provider=openrouter session=s-77");
+        let rendered = render_error(&err, &ErrorContext::unknown());
+        assert!(rendered.contains("provider:openrouter"));
+        assert!(rendered.contains("session_id:s-77"));
     }
 }

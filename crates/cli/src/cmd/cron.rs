@@ -37,7 +37,7 @@ pub enum Action {
 }
 
 pub async fn run(action: Action) -> anyhow::Result<()> {
-    let state = wire_from_config().map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
+    let state = wire_from_config()?;
 
     match action {
         Action::List => list(&state.cron_repo).await,

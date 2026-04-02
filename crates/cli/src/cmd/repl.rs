@@ -1,3 +1,4 @@
+use anyhow::Context;
 use ccode_application::commands::agent_run::AgentRunCommand;
 use clap::Args;
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -6,8 +7,8 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use super::output::{
-    StreamFormatter, ToolConfirmationDecision, classify_error, confirmation_prompt,
-    error_category_label, parse_confirmation_input,
+    ErrorContext, StreamFormatter, ToolConfirmationDecision, confirmation_prompt,
+    parse_confirmation_input, render_error_message,
 };
 #[derive(Args)]
 pub struct ReplArgs {
@@ -23,8 +24,7 @@ pub struct ReplArgs {
 }
 
 pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
-    let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok())
-        .map_err(|e| anyhow::anyhow!("bootstrap error: {e}"))?;
+    let state = ccode_bootstrap::wire_from_config_with_cwd(std::env::current_dir().ok())?;
 
     let provider = state
         .provider
@@ -36,6 +36,7 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
         provider.name(),
         provider.default_model()
     );
+    let provider_name_for_errors = provider.name().to_string();
 
     let registry = Arc::clone(&state.tool_registry);
     let tool_ctx = Arc::new(state.tool_ctx());
@@ -85,6 +86,11 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                     let tools = tool_definitions.clone();
                     let always_allowed_clone = always_allowed.clone();
                     let formatter_clone = formatter.clone();
+                    let session_for_context =
+                        session_id.clone().unwrap_or_else(|| "new".to_string());
+                    let provider_for_context = provider_name_for_errors.clone();
+                    let session_for_tool = session_for_context.clone();
+                    let provider_for_tool = provider_for_context.clone();
 
                     let execute_tool = move |name: String,
                                              tool_args: serde_json::Value|
@@ -95,6 +101,8 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                         let tool_ctx = tool_ctx_clone.clone();
                         let always_allowed = always_allowed_clone.clone();
                         let formatter = formatter_clone.clone();
+                        let session_for_errors = session_for_tool.clone();
+                        let provider_name_for_errors = provider_for_tool.clone();
                         Box::pin(async move {
                             let start_line =
                                 formatter.lock().unwrap().tool_start_line(&name, &tool_args);
@@ -128,8 +136,16 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                             let _ = std::io::stderr().flush();
 
                             if let Err(err) = &result {
-                                let category = error_category_label(classify_error(err));
-                                eprintln!("[error:{category}] {err}");
+                                eprintln!(
+                                    "{}",
+                                    render_error_message(
+                                        err,
+                                        &ErrorContext {
+                                            session_id: session_for_errors.clone(),
+                                            provider_name: provider_name_for_errors.clone(),
+                                        }
+                                    )
+                                );
                             }
 
                             result
@@ -140,21 +156,30 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                     let _ = std::io::stdout().flush();
                     let formatter_for_delta = formatter.clone();
 
-                    let sid = handle.block_on(cmd.run(
-                        session_id.clone(),
-                        persona_once.take(),
-                        input,
-                        tools,
-                        &(|content: String| {
-                            let rendered = formatter_for_delta
-                                .lock()
-                                .unwrap()
-                                .push_delta(content.as_str());
-                            print!("{}", rendered);
-                            let _ = std::io::stdout().flush();
-                        }),
-                        &execute_tool,
-                    ))?;
+                    let sid = handle.block_on(async {
+                        cmd.run(
+                            session_id.clone(),
+                            persona_once.take(),
+                            input,
+                            tools,
+                            &(|content: String| {
+                                let rendered = formatter_for_delta
+                                    .lock()
+                                    .unwrap()
+                                    .push_delta(content.as_str());
+                                print!("{}", rendered);
+                                let _ = std::io::stdout().flush();
+                            }),
+                            &execute_tool,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "error_context provider={} session={}",
+                                provider_for_context, session_for_context
+                            )
+                        })
+                    })?;
 
                     println!();
                     session_id = Some(sid.to_string());

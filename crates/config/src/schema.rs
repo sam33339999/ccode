@@ -12,6 +12,8 @@ pub struct Config {
     pub memory: Option<MemoryConfig>,
     #[serde(default)]
     pub context: ContextConfig,
+    #[serde(default)]
+    pub remote_runtime: RemoteRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -34,6 +36,44 @@ pub struct McpServerConfig {
     pub declared_capabilities: Vec<String>,
     #[serde(default)]
     pub enable_computer_use: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RemoteRuntimeConfig {
+    #[serde(default)]
+    pub ccr_http: CcrHttpConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CcrHttpConfig {
+    #[serde(default = "default_ccr_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_ccr_retry_count")]
+    pub max_retries: u32,
+    #[serde(default = "default_ccr_retry_delay_ms")]
+    pub retry_delay_ms: u64,
+}
+
+impl Default for CcrHttpConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: default_ccr_timeout_ms(),
+            max_retries: default_ccr_retry_count(),
+            retry_delay_ms: default_ccr_retry_delay_ms(),
+        }
+    }
+}
+
+fn default_ccr_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_ccr_retry_count() -> u32 {
+    2
+}
+
+fn default_ccr_retry_delay_ms() -> u64 {
+    200
 }
 
 // ── Context / compression ─────────────────────────────────────────────────────

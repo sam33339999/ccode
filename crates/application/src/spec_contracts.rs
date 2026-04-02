@@ -63,8 +63,6 @@ pub enum CcrClientError {
     Unauthorized,
     #[error("forbidden")]
     Forbidden,
-    #[error("not found")]
-    NotFound,
     #[error("invalid payload")]
     InvalidPayload,
 }

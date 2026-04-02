@@ -87,6 +87,16 @@ backend = "fts5"
 # SQLite 資料庫儲存路徑（預設 ~/.clawler/memory.db）
 # db_path = "~/.clawler/memory.db"
 
+# ── Remote Runtime (CCR HTTP) ─────────────────────────────────────────────────
+
+[remote_runtime.ccr_http]
+# 請求 timeout（毫秒）
+timeout_ms = 10000
+# 超時/暫時性失敗重試次數
+max_retries = 2
+# 重試間隔（毫秒）
+retry_delay_ms = 200
+
 # ── Embedding（backend = "vector" 時需設定）───────────────────────────────────
 
 # [memory.embedding]

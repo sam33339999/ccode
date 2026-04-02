@@ -42,8 +42,13 @@ where
         match err {
             CcrClientError::Unauthorized => RemoteSessionError::AuthUnavailable,
             CcrClientError::Forbidden => RemoteSessionError::EntitlementDenied,
-            CcrClientError::NotFound => RemoteSessionError::NotFound,
-            CcrClientError::Http(msg) => RemoteSessionError::Upstream(msg),
+            CcrClientError::Http(msg) => {
+                if msg.starts_with("status 404:") {
+                    RemoteSessionError::NotFound
+                } else {
+                    RemoteSessionError::Upstream(msg)
+                }
+            }
             CcrClientError::Timeout => RemoteSessionError::Upstream("timeout".to_string()),
             CcrClientError::InvalidPayload => {
                 RemoteSessionError::Upstream("invalid response payload".to_string())

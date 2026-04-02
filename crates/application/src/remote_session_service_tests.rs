@@ -149,7 +149,9 @@ async fn reconcile_resume_returns_invalid_transition_for_archived() {
 #[tokio::test]
 async fn create_session_maps_not_found_error() {
     let client = MockCcrClient {
-        create_results: Arc::new(Mutex::new(vec![Err(CcrClientError::NotFound)].into())),
+        create_results: Arc::new(Mutex::new(
+            vec![Err(CcrClientError::Http("status 404: missing".to_string()))].into(),
+        )),
         ..MockCcrClient::default()
     };
     let svc = ApplicationRemoteSessionService::new(client, true);

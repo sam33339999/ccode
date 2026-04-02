@@ -17,6 +17,10 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpConfig {
     #[serde(default)]
+    pub enable_chicago_mcp_feature_gate: bool,
+    #[serde(default)]
+    pub allow_privileged_computer_use: bool,
+    #[serde(default)]
     pub servers: Vec<McpServerConfig>,
 }
 
@@ -26,6 +30,10 @@ pub struct McpServerConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub declared_capabilities: Vec<String>,
+    #[serde(default)]
+    pub enable_computer_use: bool,
 }
 
 // ── Context / compression ─────────────────────────────────────────────────────

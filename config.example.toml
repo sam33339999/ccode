@@ -63,10 +63,18 @@ default_model = "claude-opus-4-5"
 # ── MCP Servers ────────────────────────────────────────────────────────────────
 # 啟動後會對每個 server 呼叫 tools/list，並把回傳工具註冊到工具表中。
 
+[mcp]
+# Chicago MCP 高權限能力總開關（預設 false）
+enable_chicago_mcp_feature_gate = false
+# Policy 是否允許高權限 computer-use（預設 false）
+allow_privileged_computer_use = false
+
 # [[mcp.servers]]
 # name = "filesystem"
 # command = "node"
 # args = ["./mcp-filesystem-server.js", "--stdio"]
+# declared_capabilities = ["standard"] # 可選: "privileged_computer_use"
+# enable_computer_use = false
 
 # ── Memory ─────────────────────────────────────────────────────────────────────
 # Agent 記憶系統設定

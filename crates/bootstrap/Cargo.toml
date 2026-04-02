@@ -9,6 +9,7 @@ ccode-ports        = { workspace = true }
 ccode-config       = { workspace = true }
 ccode-provider     = { workspace = true }
 ccode-application  = { workspace = true }
+ccode-mcp-runtime  = { path = "../mcp-runtime" }
 ccode-session      = { path = "../session" }
 ccode-tools        = { path = "../tools" }
 ccode-cron         = { path = "../cron" }

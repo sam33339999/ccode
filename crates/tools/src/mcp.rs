@@ -1,6 +1,10 @@
 use async_trait::async_trait;
 use ccode_mcp_runtime::{
     client::{JsonRpcMcpClient, McpClientError, McpToolDefinition},
+    contracts::{
+        enforce_capability_policy, CapabilityLevel, McpCapabilityPolicy, McpPolicyError,
+        McpServerRef,
+    },
     transport::{StdioTransport, TransportError},
 };
 use ccode_ports::{
@@ -18,6 +22,8 @@ pub struct McpServerLaunch {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    pub declared_capabilities: Vec<CapabilityLevel>,
+    pub enable_computer_use: bool,
 }
 
 pub struct DiscoveredMcpTool {
@@ -27,10 +33,18 @@ pub struct DiscoveredMcpTool {
 
 pub async fn discover_mcp_tools(
     servers: &[McpServerLaunch],
+    policy: &dyn McpCapabilityPolicy,
+    chicago_mcp_feature_gate: bool,
 ) -> Result<Vec<DiscoveredMcpTool>, PortError> {
     let mut discovered = Vec::new();
 
     for server in servers {
+        let server_ref = McpServerRef::new(server.name.clone())
+            .with_computer_use_requested(server.enable_computer_use)
+            .with_declared_capabilities(server.declared_capabilities.iter().copied());
+        enforce_capability_policy(policy, &server_ref, chicago_mcp_feature_gate)
+            .map_err(map_policy_error)?;
+
         let args: Vec<&str> = server.args.iter().map(String::as_str).collect();
         let transport = StdioTransport::spawn(&server.command, &args)
             .await
@@ -57,6 +71,10 @@ pub async fn discover_mcp_tools(
     }
 
     Ok(discovered)
+}
+
+fn map_policy_error(err: McpPolicyError) -> PortError {
+    PortError::Tool(format!("mcp policy rejected server: {err}"))
 }
 
 struct McpToolAdapter {

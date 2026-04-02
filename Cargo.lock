@@ -209,6 +209,7 @@ dependencies = [
  "ccode-config",
  "ccode-cron",
  "ccode-domain",
+ "ccode-mcp-runtime",
  "ccode-ports",
  "ccode-provider",
  "ccode-session",

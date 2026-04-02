@@ -62,15 +62,23 @@ default_model = "anthropic/claude-3-5-sonnet"
         write!(
             f,
             r#"
+[mcp]
+enable_chicago_mcp_feature_gate = true
+allow_privileged_computer_use = true
+
 [[mcp.servers]]
 name = "filesystem"
 command = "node"
 args = ["server.js", "--stdio"]
+declared_capabilities = ["standard", "privileged_computer_use"]
+enable_computer_use = true
 "#
         )
         .unwrap();
 
         let cfg = load_from(f.path()).unwrap();
+        assert!(cfg.mcp.enable_chicago_mcp_feature_gate);
+        assert!(cfg.mcp.allow_privileged_computer_use);
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.mcp.servers[0].name, "filesystem");
         assert_eq!(cfg.mcp.servers[0].command, "node");
@@ -78,5 +86,13 @@ args = ["server.js", "--stdio"]
             cfg.mcp.servers[0].args,
             vec!["server.js".to_string(), "--stdio".to_string()]
         );
+        assert_eq!(
+            cfg.mcp.servers[0].declared_capabilities,
+            vec![
+                "standard".to_string(),
+                "privileged_computer_use".to_string()
+            ]
+        );
+        assert!(cfg.mcp.servers[0].enable_computer_use);
     }
 }

@@ -1,4 +1,5 @@
 use ccode_application::commands::agent_run::ContextPolicy;
+use ccode_mcp_runtime::contracts::{CapabilityLevel, DefaultMcpCapabilityPolicy};
 use ccode_ports::{
     cron::CronRepository,
     provider::LlmClient,
@@ -179,6 +180,15 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
             name: server.name.clone(),
             command: server.command.clone(),
             args: server.args.clone(),
+            declared_capabilities: server
+                .declared_capabilities
+                .iter()
+                .map(|capability| match capability.as_str() {
+                    "privileged_computer_use" => CapabilityLevel::PrivilegedComputerUse,
+                    _ => CapabilityLevel::Standard,
+                })
+                .collect(),
+            enable_computer_use: server.enable_computer_use,
         })
         .collect();
     let discovered_mcp_tools = if mcp_servers.is_empty() {
@@ -188,7 +198,15 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
             .enable_all()
             .build()
             .map_err(|e| WireError::McpRuntime(e.to_string()))?;
-        match rt.block_on(discover_mcp_tools(&mcp_servers)) {
+        let policy = DefaultMcpCapabilityPolicy::new(
+            config.mcp.enable_chicago_mcp_feature_gate,
+            config.mcp.allow_privileged_computer_use,
+        );
+        match rt.block_on(discover_mcp_tools(
+            &mcp_servers,
+            &policy,
+            config.mcp.enable_chicago_mcp_feature_gate,
+        )) {
             Ok(tools) => tools,
             Err(e) => {
                 tracing::warn!("MCP discovery failed: {e}");

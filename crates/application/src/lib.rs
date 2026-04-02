@@ -21,3 +21,5 @@ mod multi_agent_orchestration_acceptance_tests;
 mod multi_agent_orchestrator_tests;
 #[cfg(test)]
 mod remote_session_service_tests;
+#[cfg(test)]
+mod teammem_acceptance_tests;

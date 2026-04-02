@@ -12,6 +12,8 @@ pub mod ultraplan_service;
 #[cfg(test)]
 mod bridge_mode_acceptance_tests;
 #[cfg(test)]
+mod coordinator_mode_acceptance_tests;
+#[cfg(test)]
 mod multi_agent_orchestrator_tests;
 #[cfg(test)]
 mod remote_session_service_tests;

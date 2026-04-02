@@ -5,7 +5,10 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use super::output::{StreamFormatter, classify_error, error_category_label};
+use super::output::{
+    StreamFormatter, ToolConfirmationDecision, classify_error, confirmation_prompt,
+    error_category_label, parse_confirmation_input,
+};
 #[derive(Args)]
 pub struct ReplArgs {
     /// Resume an existing session by ID
@@ -100,19 +103,18 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
 
                             let is_always = always_allowed.lock().unwrap().contains(&name);
                             if !no_confirm && !is_always {
-                                eprint!(
-                                    "\n[tool: {}] args: {}\nAllow? [y/n/always]: ",
-                                    name, tool_args
-                                );
+                                eprint!("\n{}", confirmation_prompt(&name, &tool_args));
                                 let _ = std::io::stderr().flush();
                                 let mut input = String::new();
                                 std::io::stdin().read_line(&mut input).ok();
-                                match input.trim().to_lowercase().as_str() {
-                                    "n" | "no" => return Err("user denied".to_string()),
-                                    "always" => {
+                                match parse_confirmation_input(&input) {
+                                    ToolConfirmationDecision::Deny => {
+                                        return Err("user denied".to_string());
+                                    }
+                                    ToolConfirmationDecision::AllowAlways => {
                                         always_allowed.lock().unwrap().insert(name.clone());
                                     }
-                                    _ => {}
+                                    ToolConfirmationDecision::AllowOnce => {}
                                 }
                             }
                             let result = registry

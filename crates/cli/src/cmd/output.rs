@@ -17,6 +17,30 @@ pub fn error_category_label(category: ErrorCategory) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl ToolRiskLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            ToolRiskLevel::Low => "low",
+            ToolRiskLevel::Medium => "medium",
+            ToolRiskLevel::High => "high",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolConfirmationDecision {
+    AllowOnce,
+    AllowAlways,
+    Deny,
+}
+
 pub struct StreamFormatter {
     at_line_start: bool,
 }
@@ -40,9 +64,11 @@ impl StreamFormatter {
         if !self.at_line_start {
             out.push('\n');
         }
+        let risk = classify_tool_risk(tool_name).label();
         out.push_str(&format!(
-            "[tool:start] {}({})\n",
+            "[tool:start] {} risk={}({})\n",
             tool_name,
+            risk,
             summarize_tool_args(args)
         ));
         self.at_line_start = true;
@@ -69,6 +95,33 @@ pub fn summarize_tool_args(args: &Value) -> String {
         }
         Value::Object(_) => String::from("no-args"),
         _ => summarize_arg_value(args),
+    }
+}
+
+pub fn classify_tool_risk(tool_name: &str) -> ToolRiskLevel {
+    match tool_name {
+        // Can execute arbitrary commands or mutate local state heavily.
+        "shell" | "fs_write" | "fs_edit" | "spawn_agent" | "cron_create" => ToolRiskLevel::High,
+        // External network requests with lower local impact.
+        "browser" | "web_fetch" => ToolRiskLevel::Medium,
+        _ => ToolRiskLevel::Low,
+    }
+}
+
+pub fn confirmation_prompt(tool_name: &str, args: &Value) -> String {
+    format!(
+        "[tool:confirm] name={} params={} risk={}\nAllow? [y/n/a]: ",
+        tool_name,
+        summarize_tool_args(args),
+        classify_tool_risk(tool_name).label()
+    )
+}
+
+pub fn parse_confirmation_input(input: &str) -> ToolConfirmationDecision {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "n" | "no" => ToolConfirmationDecision::Deny,
+        "a" | "always" => ToolConfirmationDecision::AllowAlways,
+        _ => ToolConfirmationDecision::AllowOnce,
     }
 }
 
@@ -140,7 +193,10 @@ mod tests {
         let line =
             formatter.tool_start_line("fs_read", &json!({"path": "/tmp/a.txt", "offset": 12}));
 
-        assert_eq!(line, "[tool:start] fs_read(offset=12, path=/tmp/a.txt)\n");
+        assert_eq!(
+            line,
+            "[tool:start] fs_read risk=low(offset=12, path=/tmp/a.txt)\n"
+        );
     }
 
     #[test]
@@ -166,7 +222,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Partial text\n[tool:start] shell(cmd=echo hi)\n[tool:done] shell status=success\nresumed"
+            "Partial text\n[tool:start] shell risk=high(cmd=echo hi)\n[tool:done] shell status=success\nresumed"
         );
     }
 
@@ -218,5 +274,37 @@ mod tests {
         assert_eq!(error_category_label(ErrorCategory::Network), "network");
         assert_eq!(error_category_label(ErrorCategory::RateLimit), "rate_limit");
         assert_eq!(error_category_label(ErrorCategory::Other), "other");
+    }
+
+    #[test]
+    fn risk_classification_is_stable() {
+        assert_eq!(classify_tool_risk("fs_read"), ToolRiskLevel::Low);
+        assert_eq!(classify_tool_risk("web_fetch"), ToolRiskLevel::Medium);
+        assert_eq!(classify_tool_risk("shell"), ToolRiskLevel::High);
+    }
+
+    #[test]
+    fn confirmation_prompt_contains_required_fields_and_shortcuts() {
+        let prompt = confirmation_prompt("fs_edit", &json!({"path": "src/main.rs"}));
+        assert_eq!(
+            prompt,
+            "[tool:confirm] name=fs_edit params=path=src/main.rs risk=high\nAllow? [y/n/a]: "
+        );
+    }
+
+    #[test]
+    fn parse_confirmation_input_supports_y_n_a() {
+        assert_eq!(
+            parse_confirmation_input("y"),
+            ToolConfirmationDecision::AllowOnce
+        );
+        assert_eq!(
+            parse_confirmation_input("n"),
+            ToolConfirmationDecision::Deny
+        );
+        assert_eq!(
+            parse_confirmation_input("a"),
+            ToolConfirmationDecision::AllowAlways
+        );
     }
 }

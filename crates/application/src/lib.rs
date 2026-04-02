@@ -16,6 +16,8 @@ mod bridge_mode_acceptance_tests;
 #[cfg(test)]
 mod coordinator_mode_acceptance_tests;
 #[cfg(test)]
+mod cross_feature_integration_tests;
+#[cfg(test)]
 mod kairos_acceptance_tests;
 #[cfg(test)]
 mod multi_agent_orchestration_acceptance_tests;

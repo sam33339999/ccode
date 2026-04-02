@@ -4,6 +4,8 @@ pub mod contracts;
 pub mod transport;
 
 #[cfg(test)]
+mod chicago_mcp_acceptance_tests;
+#[cfg(test)]
 mod client_tests;
 #[cfg(test)]
 mod transport_tests;

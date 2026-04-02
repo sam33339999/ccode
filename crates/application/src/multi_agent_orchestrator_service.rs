@@ -134,9 +134,15 @@ impl MultiAgentOrchestrator for ApplicationMultiAgentOrchestrator {
                 .collect();
 
             for task in &tasks {
-                if state.contains_key(&task.task_id)
-                    || active_scopes.contains(task.owner_scope.as_str())
+                // Block if the task_id is currently running (not terminal).
+                // Allow re-spawning completed/failed/cancelled tasks for session
+                // resumption.
+                if let Some(existing) = state.get(&task.task_id)
+                    && !Self::is_terminal(existing.status)
                 {
+                    return Err(OrchestrationError::PolicyViolation);
+                }
+                if active_scopes.contains(task.owner_scope.as_str()) {
                     return Err(OrchestrationError::PolicyViolation);
                 }
             }

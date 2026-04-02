@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod bridge;
+pub mod chicago;
 pub mod cron;
 pub mod health;
 pub mod output;

@@ -274,6 +274,29 @@ async fn run_ui_loop() -> anyhow::Result<()> {
             &mut worker_monitor_rx,
             &mut dirty,
         );
+
+        // Auto-continue: when the coordinator's turn ended with running
+        // workers and all workers have now reached a terminal state,
+        // automatically send a follow-up so the coordinator can synthesize.
+        if !runtime.in_flight && app.pending_worker_count > 0 && app.running_worker_count() == 0 {
+            app.pending_worker_count = 0;
+            if let RuntimeDeps::Ready { bootstrap_state } = &runtime_deps {
+                let follow_up = app.build_worker_results_prompt();
+                app.conversation
+                    .push(ConversationLine::User(follow_up.clone()));
+                app.push_info_status("auto-continuing: all workers finished".to_string());
+                runtime.in_flight = true;
+                spawn_agent_turn(
+                    Arc::clone(bootstrap_state),
+                    runtime.session_id.clone(),
+                    follow_up,
+                    ui_tx.clone(),
+                    Arc::clone(&always_allowed_tools),
+                );
+                dirty = true;
+            }
+        }
+
         let timeout = DrawLimiter::next_timeout(last_draw, dirty);
         if event::poll(Duration::from_millis(50))? {
             let action = match event::read()? {
@@ -283,7 +306,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
             };
 
             match action {
-                AppAction::None => {}
+                AppAction::None => dirty = true,
                 AppAction::Quit => app.should_quit = true,
                 AppAction::Submit(prompt) => {
                     if runtime.in_flight {
@@ -472,6 +495,10 @@ enum ConversationLine {
         name: String,
         decision: ToolApprovalAction,
     },
+    ToolResult {
+        name: String,
+        output: String,
+    },
     WorkerStatus {
         task_id: String,
         status: String,
@@ -491,6 +518,8 @@ struct AppState {
     conversation_scroll: u16,
     tool_approval: Option<ToolApprovalModal>,
     worker_panel: WorkerPanelState,
+    /// Number of workers that were Running when the last assistant turn ended.
+    pending_worker_count: usize,
     should_quit: bool,
     theme: Theme,
 }
@@ -516,6 +545,7 @@ impl AppState {
             conversation_scroll: 0,
             tool_approval: None,
             worker_panel: WorkerPanelState::default(),
+            pending_worker_count: 0,
             should_quit: false,
             theme,
         }
@@ -914,6 +944,38 @@ impl AppState {
 
     fn close_active_assistant(&mut self) {
         self.active_assistant_idx = None;
+        // Snapshot how many workers are still running when the turn ends.
+        self.pending_worker_count = self.running_worker_count();
+    }
+
+    fn running_worker_count(&self) -> usize {
+        self.worker_panel
+            .tasks
+            .iter()
+            .filter(|t| t.status == "Running")
+            .count()
+    }
+
+    /// Build a follow-up prompt summarising completed workers so the
+    /// coordinator can synthesize results and continue.
+    fn build_worker_results_prompt(&self) -> String {
+        let mut parts = Vec::new();
+        for task in &self.worker_panel.tasks {
+            if task.status == "Running" {
+                continue;
+            }
+            let summary = task.summary.as_deref().unwrap_or("(no summary)");
+            parts.push(format!("- {} [{}]: {}", task.task_id, task.status, summary));
+        }
+        format!(
+            "All background workers have finished. Here are the results:\n{}\n\n\
+             IMPORTANT: To continue a conversation with an existing worker, \
+             pass its session_id (shown in brackets above as [session_id=...]) \
+             to the agent tool. Do NOT create new agents for tasks that already \
+             have a session — resume the existing session instead.\n\
+             Synthesize the results and continue.",
+            parts.join("\n")
+        )
     }
 
     fn open_tool_approval(
@@ -1012,6 +1074,11 @@ impl AppState {
     fn push_tool_done(&mut self, name: String, success: bool) {
         self.conversation
             .push(ConversationLine::ToolDone { name, success });
+    }
+
+    fn push_tool_result(&mut self, name: String, output: String) {
+        self.conversation
+            .push(ConversationLine::ToolResult { name, output });
     }
 
     fn push_worker_status_with_details(
@@ -1123,6 +1190,16 @@ impl AppState {
                         format!("[tool:decision] {} {}", name, decision.label()),
                         t.tool_decision_line,
                     )])]
+                }
+                ConversationLine::ToolResult { name, output } => {
+                    let mut lines = vec![Line::from(vec![Span::styled(
+                        format!("[tool:result] {name}"),
+                        t.tool_ok_line,
+                    )])];
+                    for line in output.lines() {
+                        lines.push(Line::from(format!("  {line}")));
+                    }
+                    lines
                 }
                 ConversationLine::WorkerStatus { task_id, status } => {
                     vec![Line::from(format!("[worker] {task_id} {status}"))]
@@ -1410,6 +1487,10 @@ enum UiEvent {
         name: String,
         success: bool,
     },
+    ToolResult {
+        name: String,
+        output: String,
+    },
     ToolApprovalRequested {
         name: String,
         args: Value,
@@ -1497,6 +1578,7 @@ fn drain_ui_events(
             }
             UiEvent::ToolStart { name, args } => app.push_tool_start(name, args),
             UiEvent::ToolDone { name, success } => app.push_tool_done(name, success),
+            UiEvent::ToolResult { name, output } => app.push_tool_result(name, output),
             UiEvent::ToolApprovalRequested {
                 name,
                 args,
@@ -1623,6 +1705,17 @@ fn spawn_agent_turn(
                         status: status.to_string(),
                         summary,
                         timestamp: SystemTime::now(),
+                    });
+                }
+                // Show sub-agent responses in the conversation pane.
+                if let Ok(payload) = &result
+                    && let Ok(value) = serde_json::from_str::<Value>(payload)
+                    && let Some(response) = value.get("response").and_then(Value::as_str)
+                    && !response.is_empty()
+                {
+                    let _ = tx.send(UiEvent::ToolResult {
+                        name: name.clone(),
+                        output: response.to_string(),
                     });
                 }
                 let _ = tx.send(UiEvent::ToolDone {

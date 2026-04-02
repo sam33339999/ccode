@@ -44,7 +44,7 @@ impl<R> DefaultUltraplanService<R> {
         matches!(phase, UltraplanPhase::Completed | UltraplanPhase::Failed)
     }
 
-    fn transition_allowed(from: UltraplanPhase, to: UltraplanPhase) -> bool {
+    pub(crate) fn transition_allowed(from: UltraplanPhase, to: UltraplanPhase) -> bool {
         matches!(
             (from, to),
             (UltraplanPhase::Idle, UltraplanPhase::Launching)

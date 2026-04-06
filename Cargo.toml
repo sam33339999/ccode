@@ -14,6 +14,7 @@ members = [
     "crates/state-store",
     "crates/bootstrap",
     "crates/cli",
+    "crates/gateway",
 ]
 resolver = "2"
 

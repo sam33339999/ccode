@@ -1,9 +1,17 @@
 use anyhow::Error as AnyError;
+use std::io::Write;
+
+// ANSI color codes for terminal output
+pub const GRAY: &str = "\x1b[90m";
+/// Warm amber — used for AI response text
+pub const AI_RESPONSE: &str = "\x1b[38;5;222m";
+pub const RESET: &str = "\x1b[0m";
 use ccode_application::commands::agent_run::estimate_tokens_from_chars;
 use ccode_application::error::AppError;
 use ccode_bootstrap::WireError;
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +176,67 @@ impl StreamFormatter {
             rendered.push_str(worker_line.as_str());
         }
         rendered
+    }
+}
+
+/// Animated thinking indicator shown while waiting for the first response token.
+/// Renders a braille spinner with elapsed time on stderr, erases itself when stopped.
+pub struct ThinkingSpinner {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ThinkingSpinner {
+    pub fn start_with(stop: Arc<AtomicBool>) -> Self {
+        let stop_clone = stop.clone();
+        let thread = std::thread::spawn(move || {
+            const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut i = 0usize;
+            let start = Instant::now();
+            while !stop_clone.load(Ordering::Relaxed) {
+                let elapsed = start.elapsed().as_secs_f64();
+                let (mins, secs) = (elapsed as u64 / 60, elapsed % 60.0);
+                let time_str = if mins > 0 {
+                    format!("{mins}m {secs:.0}s")
+                } else {
+                    format!("{secs:.1}s")
+                };
+                eprint!(
+                    "\r\x1b[90m{} thinking… ({time_str})\x1b[0m",
+                    FRAMES[i % FRAMES.len()]
+                );
+                let _ = std::io::stderr().flush();
+                i += 1;
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Clear the spinner line immediately and signal the thread to stop.
+    /// Safe to call from any thread; idempotent.
+    pub fn clear_and_stop(stop: &Arc<AtomicBool>) {
+        if !stop.swap(true, Ordering::Relaxed) {
+            // We were the first to stop — clear the line right now so output
+            // that follows isn't written on top of the spinner text.
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+}
+
+impl Drop for ThinkingSpinner {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 }
 

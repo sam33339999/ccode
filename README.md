@@ -2,6 +2,45 @@
 
 This repository is a Rust Cargo workspace for the `ccode` architecture.
 
+```bash
+CLAUDE_CODE_COORDINATOR_MODE=coordinator
+```
+
+## 0. Install
+
+```sh
+cargo install --path crates/cli --force
+```
+
+### macOS: binary killed immediately after install
+
+After reinstalling, macOS Gatekeeper may block the binary with no error output:
+
+```
+[1]  12345 killed  ccode repl
+```
+
+**Diagnosis:**
+
+```sh
+spctl --assess --verbose /usr/local/bin/ccode
+# → /usr/local/bin/ccode: rejected
+```
+
+The binary is `adhoc`-signed only (no Apple Developer Team ID). macOS treats a freshly installed binary as untrusted until it is explicitly allowed. The old binary worked because macOS had already recorded it as allowed — reinstalling resets that record.
+
+**Fix:**
+
+```sh
+sudo spctl --add /usr/local/bin/ccode
+```
+
+Or: **System Settings → Privacy & Security → scroll down → "Allow Anyway"**
+
+This is not caused by any dependency change. It happens every time the binary is reinstalled.
+
+---
+
 ## 1. Build and test
 
 ```sh

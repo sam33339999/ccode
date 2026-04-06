@@ -72,6 +72,14 @@ pub struct RunOutcome {
     pub metrics: RunMetrics,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompactOutcome {
+    pub before_messages: usize,
+    pub after_messages: usize,
+    pub before_chars: usize,
+    pub after_chars: usize,
+}
+
 type ExecuteToolFn = dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
     + Send
     + Sync;
@@ -111,6 +119,43 @@ impl<R: SessionRepository> AgentRunCommand<R> {
     pub fn with_computer_use_lifecycle(mut self, lifecycle: Arc<dyn ComputerUseLifecycle>) -> Self {
         self.computer_use_lifecycle = Some(lifecycle);
         self
+    }
+
+    /// Compress an existing session's history and return before/after stats.
+    /// Loads the session, summarises old messages, saves the result.
+    pub async fn compact_session(&self, session_id: &str) -> Result<CompactOutcome, AppError> {
+        let sid = SessionId(session_id.to_string());
+        let session = self
+            .repo
+            .find_by_id(&sid)
+            .await?
+            .ok_or_else(|| ccode_domain::error::DomainError::SessionNotFound(sid))?;
+
+        let before_messages = session.messages.len();
+        let before_chars: usize = session
+            .messages
+            .iter()
+            .map(|m| m.content.chars().count())
+            .sum();
+
+        let compressed =
+            compress_context(session, &*self.provider, self.context.keep_recent_messages).await?;
+
+        let after_messages = compressed.messages.len();
+        let after_chars: usize = compressed
+            .messages
+            .iter()
+            .map(|m| m.content.chars().count())
+            .sum();
+
+        self.repo.save(&compressed).await?;
+
+        Ok(CompactOutcome {
+            before_messages,
+            after_messages,
+            before_chars,
+            after_chars,
+        })
     }
 
     /// Full agentic loop — keeps calling the model and executing tools until
@@ -177,6 +222,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         self.repo.save(&session).await?;
 
         let max_iterations = self.context.max_agent_iterations;
+        let mut hit_iteration_limit = true;
 
         for _iter in 0..max_iterations {
             // ── Context compression ────────────────────────────────────────────
@@ -243,6 +289,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
 
             // If no tool calls, we're done
             if captured_tool_calls.is_empty() {
+                hit_iteration_limit = false;
                 break;
             }
 
@@ -254,8 +301,34 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                     tracing::warn!("computer-use before_tool_call hook failed: {err}");
                 }
 
-                let args_value: serde_json::Value =
-                    serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
+                let args_value: serde_json::Value = match serde_json::from_str(&tc.arguments) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            tool = %tc.name,
+                            raw_arguments = %tc.arguments,
+                            error = %e,
+                            "tool call arguments are not valid JSON"
+                        );
+                        // Surface the parse error back to the model so it can retry
+                        // with valid JSON, rather than proceeding with null args and
+                        // getting a confusing "missing field" error.
+                        let err_msg = format!(
+                            "{{\"error\": \"tool arguments are not valid JSON: {e}, raw: {:?}\"}}",
+                            tc.arguments
+                        );
+                        // Record the error result and skip to the next tool call
+                        let ts_err = now_ms();
+                        let err_result_msg = Message::new_tool_result(
+                            format!("msg-{ts_err}-t"),
+                            tc.id.clone(),
+                            err_msg,
+                            ts_err,
+                        );
+                        session.add_message(err_result_msg, ts_err);
+                        continue;
+                    }
+                };
                 let result = execute_tool(tc.name.clone(), args_value).await;
 
                 let result_content = match result {
@@ -287,7 +360,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
 
         }
 
-        if session.messages.iter().rev().any(|m| m.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())) {
+        if hit_iteration_limit {
             tracing::warn!(
                 "[agent] stopped after {max_iterations} iterations — increase context.max_agent_iterations if the task needs more rounds"
             );

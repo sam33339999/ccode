@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ccode-bootstrap = { path = "../bootstrap" }
+ccode-application = { path = "../application" }
 ccode-config = { path = "../config" }
 axum = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
+mod agent_bridge;
+
 #[derive(Debug, Parser)]
 #[command(name = "ccode-gateway", version, about = "ccode gateway daemon")]
 struct Cli {

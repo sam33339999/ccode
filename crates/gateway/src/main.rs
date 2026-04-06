@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
+mod adapters;
 mod agent_bridge;
 
 #[derive(Debug, Parser)]
@@ -44,15 +45,51 @@ async fn main() -> Result<()> {
 }
 
 mod server {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
     use anyhow::Result;
+    use axum::routing::post;
+    use axum::{Router, routing::get};
     use ccode_bootstrap::AppState;
-    use ccode_config::schema::GatewayConfig;
+    use ccode_config::schema::{GatewayConfig, TelegramConfig};
+
+    use crate::adapters;
+
+    #[derive(Clone)]
+    pub struct GatewayState {
+        pub app_state: Arc<AppState>,
+        pub telegram: Option<TelegramConfig>,
+        pub http_client: reqwest::Client,
+    }
 
     pub async fn start(
-        _state: AppState,
-        _port: u16,
-        _gateway_cfg: Option<GatewayConfig>,
+        state: AppState,
+        port: u16,
+        gateway_cfg: Option<GatewayConfig>,
     ) -> Result<()> {
+        let telegram_cfg = gateway_cfg.and_then(|cfg| cfg.telegram);
+
+        let shared_state = GatewayState {
+            app_state: Arc::new(state),
+            telegram: telegram_cfg,
+            http_client: reqwest::Client::new(),
+        };
+
+        let app = Router::new()
+            .route("/healthz", get(healthz))
+            .route("/webhook/telegram", post(adapters::telegram::handle))
+            .with_state(shared_state);
+
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        tracing::info!("gateway listening on :{}", port);
+
+        axum::serve(listener, app).await?;
         Ok(())
+    }
+
+    async fn healthz() -> &'static str {
+        "ok"
     }
 }

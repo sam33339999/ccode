@@ -1,0 +1,149 @@
+use axum::Json;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
+
+use crate::agent_bridge;
+use crate::server::GatewayState;
+
+const TELEGRAM_SECRET_HEADER: &str = "X-Telegram-Bot-Api-Secret-Token";
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramUpdate {
+    pub message: Option<TelegramMessage>,
+    #[serde(flatten)]
+    pub _extra: Map<String, Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramMessage {
+    pub text: Option<String>,
+    pub chat: TelegramChat,
+    #[serde(flatten)]
+    pub _extra: Map<String, Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramChat {
+    pub id: i64,
+    #[serde(flatten)]
+    pub _extra: Map<String, Value>,
+}
+
+pub async fn handle(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(update): Json<TelegramUpdate>,
+) -> impl IntoResponse {
+    let Some(telegram_cfg) = state.telegram.as_ref() else {
+        return StatusCode::NOT_FOUND;
+    };
+
+    if !is_webhook_secret_valid(&headers, telegram_cfg.webhook_secret.as_deref()) {
+        return StatusCode::UNAUTHORIZED;
+    }
+
+    let Some(message) = update.message else {
+        return StatusCode::OK;
+    };
+
+    let Some(text) = message.text else {
+        return StatusCode::OK;
+    };
+
+    let chat_id = message.chat.id;
+
+    let agent_reply = match agent_bridge::run_agent(&state.app_state, text, None).await {
+        Ok(reply) => reply,
+        Err(err) => {
+            tracing::error!(error = ?err, "telegram run_agent failed");
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+    };
+
+    let send_message_url = format!(
+        "https://api.telegram.org/bot{}/sendMessage",
+        telegram_cfg.bot_token
+    );
+
+    let payload = json!({
+        "chat_id": chat_id,
+        "text": agent_reply,
+    });
+
+    match state
+        .http_client
+        .post(send_message_url)
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => StatusCode::OK,
+        Ok(response) => {
+            tracing::error!(status = %response.status(), "telegram sendMessage failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        Err(err) => {
+            tracing::error!(error = ?err, "telegram sendMessage request failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+fn is_webhook_secret_valid(headers: &HeaderMap, expected_secret: Option<&str>) -> bool {
+    let Some(expected_secret) = expected_secret else {
+        return true;
+    };
+
+    let Some(actual) = headers.get(TELEGRAM_SECRET_HEADER) else {
+        return false;
+    };
+
+    match actual.to_str() {
+        Ok(actual) => actual == expected_secret,
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::is_webhook_secret_valid;
+
+    #[test]
+    fn webhook_secret_not_required_when_unset() {
+        let headers = HeaderMap::new();
+        assert!(is_webhook_secret_valid(&headers, None));
+    }
+
+    #[test]
+    fn webhook_secret_rejects_missing_header() {
+        let headers = HeaderMap::new();
+        assert!(!is_webhook_secret_valid(&headers, Some("secret")));
+    }
+
+    #[test]
+    fn webhook_secret_accepts_exact_match() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Telegram-Bot-Api-Secret-Token",
+            HeaderValue::from_static("secret"),
+        );
+
+        assert!(is_webhook_secret_valid(&headers, Some("secret")));
+    }
+
+    #[test]
+    fn webhook_secret_rejects_non_matching_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Telegram-Bot-Api-Secret-Token",
+            HeaderValue::from_static("wrong"),
+        );
+
+        assert!(!is_webhook_secret_valid(&headers, Some("secret")));
+    }
+}

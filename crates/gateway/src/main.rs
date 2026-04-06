@@ -52,7 +52,7 @@ mod server {
     use axum::routing::post;
     use axum::{Router, routing::get};
     use ccode_bootstrap::AppState;
-    use ccode_config::schema::{GatewayConfig, TelegramConfig};
+    use ccode_config::schema::{DiscordConfig, GatewayConfig, TelegramConfig};
 
     use crate::adapters;
 
@@ -60,6 +60,7 @@ mod server {
     pub struct GatewayState {
         pub app_state: Arc<AppState>,
         pub telegram: Option<TelegramConfig>,
+        pub discord: Option<DiscordConfig>,
         pub http_client: reqwest::Client,
     }
 
@@ -68,17 +69,22 @@ mod server {
         port: u16,
         gateway_cfg: Option<GatewayConfig>,
     ) -> Result<()> {
-        let telegram_cfg = gateway_cfg.and_then(|cfg| cfg.telegram);
+        let (telegram_cfg, discord_cfg) = match gateway_cfg {
+            Some(cfg) => (cfg.telegram, cfg.discord),
+            None => (None, None),
+        };
 
         let shared_state = GatewayState {
             app_state: Arc::new(state),
             telegram: telegram_cfg,
+            discord: discord_cfg,
             http_client: reqwest::Client::new(),
         };
 
         let app = Router::new()
             .route("/healthz", get(healthz))
             .route("/webhook/telegram", post(adapters::telegram::handle))
+            .route("/webhook/discord", post(adapters::discord::handle))
             .with_state(shared_state);
 
         let addr = SocketAddr::from(([0, 0, 0, 0], port));

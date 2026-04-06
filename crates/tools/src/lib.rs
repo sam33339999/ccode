@@ -4,6 +4,7 @@ pub mod fs;
 pub mod mcp;
 pub mod registry;
 pub mod shell;
+pub mod skill;
 pub mod spawn_agent;
 pub mod task_stop;
 pub mod web;

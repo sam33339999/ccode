@@ -30,7 +30,18 @@ pub struct GatewayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelegramConfig {
     pub bot_token: String,
+    /// "webhook" (default) or "long_polling".
+    /// Note: Telegram does not allow both modes on the same bot token simultaneously.
+    /// Switch modes by calling deleteWebhook first if moving from webhook to long_polling.
+    pub mode: Option<String>,
+    /// Only used in webhook mode. Validates the X-Telegram-Bot-Api-Secret-Token header.
     pub webhook_secret: Option<String>,
+}
+
+impl TelegramConfig {
+    pub fn is_long_polling(&self) -> bool {
+        self.mode.as_deref() == Some("long_polling")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

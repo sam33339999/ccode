@@ -58,8 +58,9 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
         AgentRunCommand::new(state.session_repo, provider).with_context(state.context_policy),
     );
     let mut session_id: Option<String> = args.session;
-    let persona = args.persona;
+    let persona = ccode_bootstrap::skill::augment_with_skill_catalog(args.persona, &state.skill_catalog);
     let no_confirm = args.no_confirm;
+    let skills = state.skills.clone();
 
     let handle = tokio::runtime::Handle::current();
 
@@ -70,6 +71,7 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
         let formatter: Arc<Mutex<StreamFormatter>> = Arc::new(Mutex::new(StreamFormatter::new()));
         // Persona is applied only on the first turn (new session); subsequent turns pass None
         let mut persona_once: Option<String> = persona;
+        let skills = skills;
 
         loop {
             match editor.readline("You: ") {
@@ -84,10 +86,15 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                     match input.as_str() {
                         "/help" => {
                             eprintln!("{GRAY}Commands:");
-                            eprintln!("  /clear    — start a new session (discard history)");
-                            eprintln!("  /compact  — compress session history, show token savings");
-                            eprintln!("  /help     — show this list");
-                            eprintln!("  exit      — quit{RESET}");
+                            eprintln!("  /clear       — start a new session (discard history)");
+                            eprintln!("  /compact     — compress session history, show token savings");
+                            eprintln!("  /help        — show this list");
+                            eprintln!("  /skill-name  — activate an Agent Skill by name");
+                            eprintln!("  exit         — quit{RESET}");
+                            if !skills.is_empty() {
+                                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                                eprintln!("{GRAY}Available skills: {}{RESET}", names.join(", "));
+                            }
                             continue;
                         }
                         "/clear" => {
@@ -117,6 +124,35 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                         }
                         _ => {}
                     }
+
+                    // User-explicit skill activation: /skill-name
+                    let input = if input.starts_with('/')
+                        && !matches!(input.as_str(), "/help" | "/clear" | "/compact")
+                    {
+                        let skill_name = input[1..].trim();
+                        match ccode_bootstrap::skill::load_skill_body(skill_name, &skills) {
+                            Some(body) => {
+                                eprintln!("{GRAY}[skill loaded: {skill_name}]{RESET}");
+                                body
+                            }
+                            None => {
+                                let available: Vec<&str> =
+                                    skills.iter().map(|s| s.name.as_str()).collect();
+                                if available.is_empty() {
+                                    eprintln!("{GRAY}[no skills installed]{RESET}");
+                                } else {
+                                    eprintln!(
+                                        "{GRAY}[skill not found: {skill_name} — available: {}]{RESET}",
+                                        available.join(", ")
+                                    );
+                                }
+                                continue;
+                            }
+                        }
+                    } else {
+                        input
+                    };
+
                     let _ = editor.add_history_entry(&input);
 
                     // Shared stop flag: created before execute_tool so both the tool

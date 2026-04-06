@@ -34,6 +34,9 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set OPENROUTER_API_KEY"))?;
 
+    let system_prompt =
+        ccode_bootstrap::skill::augment_with_skill_catalog(args.persona.clone(), &state.skill_catalog);
+
     eprintln!(
         "[provider: {} | model: {}]",
         provider.name(),
@@ -149,7 +152,7 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
     let outcome = cmd
         .run_with_metrics(
             args.session,
-            args.persona,
+            system_prompt,
             args.message,
             tool_definitions,
             &on_delta,

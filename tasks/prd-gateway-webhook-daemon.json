@@ -1,0 +1,165 @@
+{
+  "name": "Gateway Webhook Daemon",
+  "description": "新增 crates/gateway/ binary crate，作為 long-running HTTP daemon，接收來自 Telegram 和 Discord 的 webhook/interaction 訊息，驅動 AgentRunCommand 執行並回覆。",
+  "branchName": "feat/gateway-webhook-daemon",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "擴展 Config schema 支援 gateway 設定",
+      "description": "As a developer, I want the Config struct to support gateway configuration so that Telegram and Discord credentials can be loaded from ~/.ccode/config.toml.",
+      "acceptanceCriteria": [
+        "- [ ] 在 crates/config/src/schema.rs 的 Config struct 新增 `pub gateway: Option<GatewayConfig>` 欄位",
+        "- [ ] 新增 GatewayConfig struct：port: Option<u16>, workdir: Option<String>, telegram: Option<TelegramConfig>, discord: Option<DiscordConfig>",
+        "- [ ] 新增 TelegramConfig struct：bot_token: String, webhook_secret: Option<String>",
+        "- [ ] 新增 DiscordConfig struct：application_public_key: String, bot_token: Option<String>",
+        "- [ ] cargo test -p ccode-config 通過",
+        "- [ ] cargo fmt --check 通過",
+        "- [ ] cargo clippy --workspace -- -D warnings 通過"
+      ],
+      "priority": 1,
+      "dependsOn": [],
+      "passes": true,
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-002",
+      "title": "建立 gateway crate 骨架與 main.rs",
+      "description": "As a developer, I want a new crates/gateway/ crate wired into the workspace so that I can run ccode-gateway as a standalone binary.",
+      "acceptanceCriteria": [
+        "- [ ] 建立 crates/gateway/Cargo.toml，依賴：ccode-bootstrap, ccode-config, axum, tokio (rt-multi-thread+macros+signal), serde, serde_json, tracing, tracing-subscriber, thiserror, anyhow, reqwest, clap, ed25519-dalek = \"2\", hex = \"0.4\"",
+        "- [ ] 在 workspace root Cargo.toml 的 members 加入 \"crates/gateway\"",
+        "- [ ] main.rs 用 clap 解析 --port: Option<u16> 和 --workdir: Option<String>",
+        "- [ ] 讀取 config via ccode_config::load()，CLI flag 覆蓋 config 的 port/workdir",
+        "- [ ] 呼叫 wire_from_config_with_cwd(workdir_override) 初始化 AppState",
+        "- [ ] 呼叫 server::start(state, port, cfg.gateway).await",
+        "- [ ] cargo build -p ccode-gateway 成功",
+        "- [ ] cargo fmt --check 通過",
+        "- [ ] cargo clippy --workspace -- -D warnings 通過",
+        "- [ ] cargo test -p ccode-bootstrap --test workspace_architecture 通過"
+      ],
+      "priority": 2,
+      "dependsOn": [
+        "US-001"
+      ],
+      "passes": true,
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-003",
+      "title": "實作 agent_bridge — 將訊息橋接到 AgentRunCommand",
+      "description": "As a gateway, I want to forward incoming text messages to AgentRunCommand and return the response so that Telegram/Discord users can interact with the AI agent.",
+      "acceptanceCriteria": [
+        "- [ ] 建立 crates/gateway/src/agent_bridge.rs",
+        "- [ ] 定義 pub async fn run_agent(state: &AppState, text: String, session_id: Option<String>) -> anyhow::Result<String>",
+        "- [ ] 參考 crates/cli/src/cmd/agent.rs 模式建立 AgentRunCommand",
+        "- [ ] on_delta 收集 delta 字串到 Arc<Mutex<String>> buffer（不直接 print）",
+        "- [ ] execute_tool 無 confirmation prompt，直接呼叫 registry.execute",
+        "- [ ] 呼叫 cmd.run_with_metrics 並回傳完整 response 字串",
+        "- [ ] cargo build -p ccode-gateway 成功",
+        "- [ ] cargo fmt --check 通過",
+        "- [ ] cargo clippy --workspace -- -D warnings 通過"
+      ],
+      "priority": 3,
+      "dependsOn": [
+        "US-002"
+      ],
+      "passes": true,
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-004",
+      "title": "實作 Telegram webhook handler",
+      "description": "As a Telegram bot, I want to receive webhook updates and reply with agent responses so that users can chat with the AI agent via Telegram.",
+      "acceptanceCriteria": [
+        "- [ ] 建立 crates/gateway/src/adapters/mod.rs 和 telegram.rs",
+        "- [ ] 定義最小必要型別：TelegramUpdate, TelegramMessage, TelegramChat",
+        "- [ ] 若設定了 webhook_secret，驗證 X-Telegram-Bot-Api-Secret-Token header；不符合回 401",
+        "- [ ] 取出 update.message.text 和 chat.id；非文字訊息回 200 OK（忽略）",
+        "- [ ] 呼叫 agent_bridge::run_agent 取得回應",
+        "- [ ] 用 reqwest 呼叫 https://api.telegram.org/bot{token}/sendMessage 回覆",
+        "- [ ] 回傳 200 OK",
+        "- [ ] cargo build -p ccode-gateway 成功",
+        "- [ ] cargo fmt --check 通過",
+        "- [ ] cargo clippy --workspace -- -D warnings 通過"
+      ],
+      "priority": 4,
+      "dependsOn": [
+        "US-003"
+      ],
+      "passes": true,
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-005",
+      "title": "實作 Discord interactions handler（含 Ed25519 驗證）",
+      "description": "As a Discord bot, I want to receive slash command interactions with Ed25519 signature verification and reply with agent responses so that users can chat with the AI agent via Discord.",
+      "acceptanceCriteria": [
+        "- [ ] 建立 crates/gateway/src/adapters/discord.rs",
+        "- [ ] 定義型別：DiscordInteraction（type: u8, data: Option<DiscordInteractionData>, token: String, channel_id: Option<String>）",
+        "- [ ] 從 header 取 X-Signature-Ed25519（hex 解碼）和 X-Signature-Timestamp",
+        "- [ ] 用 ed25519_dalek::VerifyingKey::from_bytes 載入 application_public_key",
+        "- [ ] 驗證 timestamp + body 的簽名；失敗回 401",
+        "- [ ] 使用 axum::body::Bytes extractor 取原始 body（不先用 Json）",
+        "- [ ] type == 1 (PING)：回 {\"type\": 1}（PONG）",
+        "- [ ] type == 2 (APPLICATION_COMMAND)：取出文字，呼叫 agent_bridge::run_agent",
+        "- [ ] 回覆 {\"type\": 4, \"data\": {\"content\": \"...\"}}",
+        "- [ ] cargo build -p ccode-gateway 成功",
+        "- [ ] cargo fmt --check 通過",
+        "- [ ] cargo clippy --workspace -- -D warnings 通過"
+      ],
+      "priority": 5,
+      "dependsOn": [
+        "US-003"
+      ],
+      "passes": true,
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-006",
+      "title": "實作 server.rs — Axum router 與 graceful shutdown",
+      "description": "As a gateway operator, I want an Axum HTTP server with health check, Telegram and Discord routes, and graceful shutdown so that the daemon runs reliably in production.",
+      "acceptanceCriteria": [
+        "- [ ] 建立 crates/gateway/src/server.rs",
+        "- [ ] pub async fn start(state: AppState, port: u16, gateway_cfg: Option<GatewayConfig>) -> anyhow::Result<()>",
+        "- [ ] 建立 Arc<AppState> 作為 Axum shared state",
+        "- [ ] GET /health → 200 OK + \"ok\"",
+        "- [ ] POST /webhook/telegram → telegram::handle（telegram config 存在時）否則 404",
+        "- [ ] POST /webhook/discord → discord::handle（discord config 存在時）否則 404",
+        "- [ ] Graceful shutdown：tokio::select! on ctrl_c() 和 UNIX SIGTERM (#[cfg(unix)])",
+        "- [ ] tracing::info!(\"gateway listening on :{}\", port) 啟動日誌",
+        "- [ ] cargo build -p ccode-gateway 成功",
+        "- [ ] cargo fmt --check 通過",
+        "- [ ] cargo clippy --workspace -- -D warnings 通過"
+      ],
+      "priority": 6,
+      "dependsOn": [
+        "US-004",
+        "US-005"
+      ],
+      "passes": true,
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-007",
+      "title": "驗證與收尾",
+      "description": "As a developer, I want all quality gates to pass and the gateway binary to respond correctly to manual curl tests so that the feature is production-ready.",
+      "acceptanceCriteria": [
+        "- [ ] cargo fmt --check 通過",
+        "- [ ] cargo clippy --workspace -- -D warnings 通過",
+        "- [ ] cargo test -p ccode-bootstrap --test workspace_architecture 通過",
+        "- [ ] cargo build -p ccode-gateway 成功",
+        "- [ ] curl http://localhost:8080/health 回傳 200 OK",
+        "- [ ] curl -X POST http://localhost:8080/webhook/telegram 含合法 JSON 回傳 200 OK"
+      ],
+      "priority": 7,
+      "dependsOn": [
+        "US-006"
+      ],
+      "passes": true,
+      "completionNotes": "Completed by agent"
+    }
+  ],
+  "metadata": {
+    "updatedAt": "2026-04-06T12:06:48.923Z"
+  }
+}

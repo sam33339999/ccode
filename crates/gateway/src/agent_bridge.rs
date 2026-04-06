@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use ccode_application::commands::agent_run::AgentRunCommand;
 use ccode_bootstrap::AppState;
+use ccode_bootstrap::skill::augment_with_skill_catalog;
 
 #[allow(dead_code)]
 pub async fn run_agent(
@@ -20,6 +21,7 @@ pub async fn run_agent(
     let cmd = AgentRunCommand::new(Arc::clone(&state.session_repo), provider)
         .with_context(state.context_policy.clone());
     let tool_definitions = state.tool_registry.definitions();
+    let system_prompt = augment_with_skill_catalog(None, &state.skill_catalog);
 
     let reply = Arc::new(Mutex::new(String::new()));
     let reply_for_delta = Arc::clone(&reply);
@@ -44,7 +46,7 @@ pub async fn run_agent(
 
     cmd.run_with_metrics(
         session_id.clone(),
-        None,
+        system_prompt,
         text,
         tool_definitions,
         &on_delta,

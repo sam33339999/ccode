@@ -13,6 +13,7 @@ use ccode_tools::{
     fs::{FsEditTool, FsGlobTool, FsGrepTool, FsListTool, FsReadTool, FsWriteTool},
     mcp::{McpServerLaunch, discover_mcp_tools},
     shell::ShellTool,
+    skill::{ActivateSkillTool, SkillEntry, build_skill_catalog, discover_skills},
     spawn_agent::SpawnAgentTool,
     task_stop::TaskStopTool,
     web::{BrowserTool, WebFetchTool},
@@ -34,6 +35,13 @@ pub mod worker_monitor {
     pub use ccode_tools::worker_monitor::{WorkerMonitorEvent, subscribe_worker_events};
 }
 
+pub mod skill {
+    pub use ccode_tools::skill::{
+        SkillEntry, augment_with_skill_catalog, build_skill_catalog, discover_skills,
+        load_skill_body,
+    };
+}
+
 /// Shared application state passed into every request handler.
 pub struct AppState {
     pub session_repo: Arc<dyn SessionRepository>,
@@ -43,6 +51,11 @@ pub struct AppState {
     pub permission: Permission,
     pub cwd: PathBuf,
     pub context_policy: ContextPolicy,
+    /// Pre-built skill catalog XML for injection into system prompts.
+    /// `None` when no skills are installed.
+    pub skill_catalog: Option<String>,
+    /// Discovered skills, used for user-explicit `/skill-name` activation.
+    pub skills: Vec<SkillEntry>,
 }
 
 impl AppState {
@@ -66,6 +79,7 @@ pub fn build_tool_registry(
     cron_repo: Option<Arc<dyn ccode_ports::cron::CronRepository>>,
     provider: Option<Arc<dyn ccode_ports::provider::LlmClient>>,
     discovered_mcp_tools: Vec<ccode_tools::mcp::DiscoveredMcpTool>,
+    skills: Vec<SkillEntry>,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(FsReadTool));
@@ -85,6 +99,9 @@ pub fn build_tool_registry(
     for tool in discovered_mcp_tools {
         registry.register_with_source(tool.source, tool.adapter);
     }
+    if !skills.is_empty() {
+        registry.register(Arc::new(ActivateSkillTool::new(skills)));
+    }
     registry
 }
 
@@ -98,10 +115,12 @@ pub fn wire_dev() -> AppState {
         session_repo: Arc::new(InMemorySessionRepo::new()),
         cron_repo: Arc::new(FileCronRepo::new(cron_dir).expect("cron dir")),
         provider: None,
-        tool_registry: Arc::new(build_tool_registry(cwd.clone(), None, None, Vec::new())),
+        tool_registry: Arc::new(build_tool_registry(cwd.clone(), None, None, Vec::new(), Vec::new())),
         permission: Permission::default(),
         cwd,
         context_policy: ContextPolicy::default(),
+        skill_catalog: None,
+        skills: Vec::new(),
     }
 }
 
@@ -253,11 +272,18 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
     let provider_arc = provider;
     let context_policy = context_policy_from_config(&config.context);
 
+    let skills = discover_skills(&cwd);
+    let skill_catalog = build_skill_catalog(&skills);
+    if !skills.is_empty() {
+        tracing::info!(count = skills.len(), "agent skills loaded");
+    }
+
     let tool_registry = Arc::new(build_tool_registry(
         cwd.clone(),
         Some(Arc::clone(&cron_repo)),
         provider_arc.clone(),
         discovered_mcp_tools,
+        skills.clone(),
     ));
     let worker_runtime = Arc::new(ManagedWorkerRuntime::default());
     let orchestrator = build_orchestrator(worker_runtime.clone());
@@ -284,6 +310,8 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
         permission,
         cwd,
         context_policy,
+        skill_catalog,
+        skills,
     })
 }
 

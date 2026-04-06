@@ -89,3 +89,97 @@ Forbidden edges:
 
 - `domain` must not depend on `ports`, `provider`, `tools`, or `cli`.
 - `ports` must not depend on `provider`, `tools`, or `cli`.
+
+---
+
+## 5. Gateway daemon
+
+`ccode-gateway` is a long-running HTTP daemon that receives messages from messaging platforms (Telegram, Discord) and drives the agent.
+
+### Install
+
+```sh
+cargo install --path crates/gateway --force
+```
+
+### Configure
+
+Add a `[gateway]` section to `~/.ccode/config.toml`:
+
+```toml
+[gateway]
+port    = 7001          # optional, default 7001
+workdir = "/your/work"  # optional, directory the agent operates in
+
+[gateway.telegram]
+bot_token      = "123456:ABC-DEF..."   # from @BotFather
+mode           = "webhook"             # "webhook" (default) or "long_polling"
+webhook_secret = "my-secret"           # optional, webhook mode only
+
+[gateway.discord]
+application_public_key = "abcdef..."   # from Discord Developer Portal → General Information
+bot_token              = "Bot xxxx"    # optional, needed only for follow-up messages
+```
+
+### Run
+
+```sh
+# use config file values
+ccode-gateway
+
+# override port and workdir at runtime
+ccode-gateway --port 8080 --workdir /tmp/agent-work
+
+# adjust log level
+RUST_LOG=debug ccode-gateway
+```
+
+### Endpoints
+
+| Method | Path                | Description                               |
+|--------|---------------------|-------------------------------------------|
+| GET    | `/health`           | Liveness check, returns `ok`              |
+| POST   | `/webhook/telegram` | Telegram webhook (webhook mode only)      |
+| POST   | `/webhook/discord`  | Discord interactions endpoint             |
+
+Endpoints for unconfigured platforms return `404`.
+In `long_polling` mode, `/webhook/telegram` is not registered — the gateway polls Telegram directly.
+
+### Telegram: webhook vs long polling
+
+> **Important:** Telegram does not allow webhook and long polling on the same bot token simultaneously.
+> If a webhook is registered, `getUpdates` (long polling) will not receive new messages.
+> To switch from webhook to long polling, delete the webhook first:
+> ```sh
+> curl "https://api.telegram.org/bot<TOKEN>/deleteWebhook"
+> ```
+
+**Webhook mode** — requires a public HTTPS URL; Telegram pushes updates to your server:
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+2. Set `mode = "webhook"` (or omit, it is the default).
+3. Start the gateway and register the webhook:
+   ```sh
+   curl "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+     -d "url=https://your-domain/webhook/telegram" \
+     -d "secret_token=my-secret"
+   ```
+
+**Long polling mode** — no public URL needed; the gateway polls Telegram continuously.
+Suitable for local development or environments without inbound HTTPS:
+1. Delete any existing webhook (see above).
+2. Set `mode = "long_polling"` in config.
+3. Start the gateway — it begins polling immediately, no extra setup required.
+
+### Discord setup
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications) → create an application.
+2. Under **General Information**, copy the **Public Key**.
+3. Under **Interactions Endpoint URL**, set `https://your-domain/webhook/discord`.
+4. Discord sends a PING (type 1) on save — the gateway replies with PONG automatically.
+5. Create a slash command (e.g. `/ask`) with a required string option named `prompt`.
+6. Users invoke `/ask prompt:your question` — the gateway runs the agent and replies inline.
+
+### Session continuity
+
+- **Discord**: each channel maintains its own session (keyed by `channel_id`), so the agent remembers context across messages in the same channel.
+- **Telegram**: each message starts a new session (stateless by default).

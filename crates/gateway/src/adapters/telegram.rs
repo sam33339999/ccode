@@ -8,6 +8,22 @@ use serde_json::{Map, Value, json};
 use crate::agent_bridge;
 use crate::server::GatewayState;
 
+/// Resolve a Telegram message: if it starts with `/skill-name`, load skill body;
+/// otherwise return the original text. Returns `None` if skill not found.
+fn resolve_skill_text(text: &str, state: &GatewayState) -> Option<String> {
+    if !text.starts_with('/') {
+        return Some(text.to_string());
+    }
+    let skill_name = text[1..].trim();
+    if skill_name.is_empty() {
+        return Some(text.to_string());
+    }
+    match ccode_bootstrap::skill::load_skill_body(skill_name, &state.app_state.skills) {
+        Some(body) => Some(body),
+        None => None,
+    }
+}
+
 const TELEGRAM_SECRET_HEADER: &str = "X-Telegram-Bot-Api-Secret-Token";
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +70,14 @@ pub async fn handle(
     };
 
     let chat_id = message.chat.id;
+
+    let text = match resolve_skill_text(&text, &state) {
+        Some(resolved) => resolved,
+        None => {
+            tracing::debug!(skill_name = %&text[1..], "skill not found, ignoring message");
+            return StatusCode::OK;
+        }
+    };
 
     let agent_reply = match agent_bridge::run_agent(&state.app_state, text, None).await {
         Ok(reply) => reply,

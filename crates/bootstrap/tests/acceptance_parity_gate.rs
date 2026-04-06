@@ -65,7 +65,7 @@ fn acceptance_parity_gate_artifacts_and_controls_exist() {
         );
     }
 
-    let registry = build_tool_registry(PathBuf::from("."), None, None, Vec::new());
+    let registry = build_tool_registry(PathBuf::from("."), None, None, Vec::new(), Vec::new());
     let registered: HashSet<String> = registry.definitions().into_iter().map(|d| d.name).collect();
     for required in [
         "fs_read",

@@ -6,6 +6,7 @@ use axum::routing::post;
 use axum::{Router, routing::get};
 use ccode_bootstrap::AppState;
 use ccode_config::schema::{DiscordConfig, GatewayConfig, TelegramConfig};
+use tokio::sync::watch;
 
 use crate::adapters;
 
@@ -23,11 +24,34 @@ pub async fn start(state: AppState, port: u16, gateway_cfg: Option<GatewayConfig
         None => (None, None),
     };
 
+    let http_client = reqwest::Client::new();
+    let app_state = Arc::new(state);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Spawn long polling loop if configured
+    let polling_handle = if let Some(ref tg) = telegram_cfg {
+        if tg.is_long_polling() {
+            let cfg = tg.clone();
+            let state_clone = Arc::clone(&app_state);
+            let client_clone = http_client.clone();
+            Some(tokio::spawn(adapters::telegram_polling::run(
+                cfg,
+                state_clone,
+                client_clone,
+                shutdown_rx,
+            )))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let shared_state = GatewayState {
-        app_state: Arc::new(state),
+        app_state,
         telegram: telegram_cfg,
         discord: discord_cfg,
-        http_client: reqwest::Client::new(),
+        http_client,
     };
 
     let app = build_router(shared_state);
@@ -37,17 +61,26 @@ pub async fn start(state: AppState, port: u16, gateway_cfg: Option<GatewayConfig
     tracing::info!("gateway listening on :{}", port);
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await?;
+
+    if let Some(handle) = polling_handle {
+        let _ = handle.await;
+    }
+
     Ok(())
 }
 
-fn build_router(state: GatewayState) -> Router {
-    let telegram_enabled = state.telegram.is_some();
+pub fn build_router(state: GatewayState) -> Router {
+    let telegram_webhook = state
+        .telegram
+        .as_ref()
+        .map(|t| !t.is_long_polling())
+        .unwrap_or(false);
     let discord_enabled = state.discord.is_some();
 
     let mut app = Router::new().route("/health", get(health));
-    if telegram_enabled {
+    if telegram_webhook {
         app = app.route("/webhook/telegram", post(adapters::telegram::handle));
     }
     if discord_enabled {
@@ -61,7 +94,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
             tracing::warn!(error = ?err, "failed to install ctrl_c signal handler");
@@ -90,6 +123,8 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = terminate => {}
     }
+
+    let _ = shutdown_tx.send(true);
 }
 
 #[cfg(test)]
@@ -172,10 +207,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telegram_endpoint_is_enabled_when_config_present() {
+    async fn telegram_webhook_endpoint_enabled_when_mode_is_webhook() {
         let app = build_router(gateway_state(
             Some(TelegramConfig {
                 bot_token: "bot-token".to_string(),
+                mode: Some("webhook".to_string()),
                 webhook_secret: None,
             }),
             None,
@@ -193,6 +229,31 @@ mod tests {
             .unwrap();
 
         assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn telegram_webhook_endpoint_is_404_when_mode_is_long_polling() {
+        let app = build_router(gateway_state(
+            Some(TelegramConfig {
+                bot_token: "bot-token".to_string(),
+                mode: Some("long_polling".to_string()),
+                webhook_secret: None,
+            }),
+            None,
+        ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/webhook/telegram")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

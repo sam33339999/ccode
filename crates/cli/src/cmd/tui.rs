@@ -458,10 +458,7 @@ struct StatusLine {
 enum ConversationLine {
     User(String),
     Assistant(String),
-    WorkerStatus {
-        task_id: String,
-        status: String,
-    },
+    WorkerStatus { task_id: String, status: String },
 }
 
 struct AppState {

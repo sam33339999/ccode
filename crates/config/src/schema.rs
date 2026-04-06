@@ -16,6 +16,27 @@ pub struct Config {
     pub remote_runtime: RemoteRuntimeConfig,
     #[serde(default)]
     pub tui: TuiConfig,
+    pub gateway: Option<GatewayConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GatewayConfig {
+    pub port: Option<u16>,
+    pub workdir: Option<String>,
+    pub telegram: Option<TelegramConfig>,
+    pub discord: Option<DiscordConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    pub bot_token: String,
+    pub webhook_secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordConfig {
+    pub application_public_key: String,
+    pub bot_token: Option<String>,
 }
 
 /// TUI display and accessibility settings.

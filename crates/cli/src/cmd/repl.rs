@@ -7,12 +7,11 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use ccode_application::commands::agent_run::estimate_tokens_from_chars;
 use super::output::{
-    AI_RESPONSE, GRAY, RESET,
-    ErrorContext, StreamFormatter, StreamProgress, ThinkingSpinner, ToolConfirmationDecision,
-    confirmation_prompt, parse_confirmation_input, render_error_message,
+    AI_RESPONSE, ErrorContext, GRAY, RESET, StreamFormatter, StreamProgress, ThinkingSpinner,
+    ToolConfirmationDecision, confirmation_prompt, parse_confirmation_input, render_error_message,
 };
+use ccode_application::commands::agent_run::estimate_tokens_from_chars;
 #[derive(Args)]
 pub struct ReplArgs {
     /// Resume an existing session by ID

@@ -95,4 +95,42 @@ enable_computer_use = true
         );
         assert!(cfg.mcp.servers[0].enable_computer_use);
     }
+
+    #[test]
+    fn parses_gateway_config() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[gateway]
+port = 7001
+workdir = "/tmp/ccode-gateway"
+
+[gateway.telegram]
+bot_token = "tg-secret"
+webhook_secret = "tg-webhook-secret"
+
+[gateway.discord]
+application_public_key = "discord-public-key"
+bot_token = "discord-bot-token"
+"#
+        )
+        .unwrap();
+
+        let cfg = load_from(f.path()).unwrap();
+        let gateway = cfg.gateway.unwrap();
+        assert_eq!(gateway.port, Some(7001));
+        assert_eq!(gateway.workdir.as_deref(), Some("/tmp/ccode-gateway"));
+
+        let telegram = gateway.telegram.unwrap();
+        assert_eq!(telegram.bot_token, "tg-secret");
+        assert_eq!(
+            telegram.webhook_secret.as_deref(),
+            Some("tg-webhook-secret")
+        );
+
+        let discord = gateway.discord.unwrap();
+        assert_eq!(discord.application_public_key, "discord-public-key");
+        assert_eq!(discord.bot_token.as_deref(), Some("discord-bot-token"));
+    }
 }

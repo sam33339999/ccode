@@ -296,7 +296,9 @@ fn context_policy_from_config(cfg: &ccode_config::schema::ContextConfig) -> Cont
                 if ratio == 0.0 {
                     defaults.compress_chars_threshold
                 } else {
-                    ((max_tokens as f64) * (ratio as f64) * (ccode_application::commands::agent_run::CHARS_PER_TOKEN_ESTIMATE as f64))
+                    ((max_tokens as f64)
+                        * (ratio as f64)
+                        * (ccode_application::commands::agent_run::CHARS_PER_TOKEN_ESTIMATE as f64))
                         .floor() as usize
                 }
             }

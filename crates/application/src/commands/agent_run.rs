@@ -5,7 +5,9 @@ use ccode_domain::{
     session::{Session, SessionId},
 };
 use ccode_ports::{
-    provider::{LlmClient, LlmError, LlmRequest, LlmStream, StreamEvent, TokenUsage, ToolDefinition},
+    provider::{
+        LlmClient, LlmError, LlmRequest, LlmStream, StreamEvent, TokenUsage, ToolDefinition,
+    },
     repositories::SessionRepository,
 };
 use futures::StreamExt;
@@ -129,7 +131,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
             .repo
             .find_by_id(&sid)
             .await?
-            .ok_or_else(|| ccode_domain::error::DomainError::SessionNotFound(sid))?;
+            .ok_or(ccode_domain::error::DomainError::SessionNotFound(sid))?;
 
         let before_messages = session.messages.len();
         let before_chars: usize = session
@@ -357,7 +359,6 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                 session.add_message(result_msg, ts2);
             }
             self.repo.save(&session).await?;
-
         }
 
         if hit_iteration_limit {

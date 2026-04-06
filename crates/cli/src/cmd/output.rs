@@ -10,8 +10,8 @@ use ccode_application::commands::agent_run::estimate_tokens_from_chars;
 use ccode_application::error::AppError;
 use ccode_bootstrap::WireError;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +228,6 @@ impl ThinkingSpinner {
             let _ = std::io::stderr().flush();
         }
     }
-
 }
 
 impl Drop for ThinkingSpinner {
@@ -529,7 +528,7 @@ fn classify_message_into_envelope(message: &str, ctx: &ErrorContext) -> ErrorEnv
             } else {
                 ErrorEnvelope::new(
                     ErrorCategory::State,
-                    &format!("Unexpected internal error occurred. Detail: {message}"),
+                    format!("Unexpected internal error occurred. Detail: {message}"),
                     Some("Retry the command. If it persists, report the correlation ID.".to_string()),
                     ctx,
                 )

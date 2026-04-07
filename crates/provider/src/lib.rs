@@ -16,6 +16,9 @@ pub mod openrouter;
 #[cfg(feature = "provider-zhipu")]
 pub mod zhipu;
 
+#[cfg(feature = "provider-openai")]
+pub mod openai;
+
 #[cfg(feature = "provider-llamacpp")]
 pub mod llamacpp;
 

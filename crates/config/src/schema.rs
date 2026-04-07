@@ -296,6 +296,27 @@ pub struct OpenAiConfig {
     pub context_window: Option<usize>,
 }
 
+impl OpenAiConfig {
+    pub fn resolved_api_key(&self) -> Option<String> {
+        self.api_key
+            .clone()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+    }
+
+    pub fn resolved_base_url(&self) -> String {
+        std::env::var("OPENAI_BASE_URL")
+            .ok()
+            .unwrap_or_else(|| "https://api.openai.com/v1".into())
+    }
+
+    pub fn resolved_default_model(&self) -> String {
+        self.default_model
+            .clone()
+            .or_else(|| std::env::var("OPENAI_DEFAULT_MODEL").ok())
+            .unwrap_or_else(|| "gpt-4o".into())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnthropicConfig {
     /// Bearer token. Falls back to `ANTHROPIC_API_KEY` env var.

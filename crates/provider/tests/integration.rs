@@ -10,11 +10,12 @@
 
 use std::time::Duration;
 
-use ccode_config::schema::{AnthropicConfig, Config};
+use ccode_config::schema::{AnthropicConfig, Config, OpenAiConfig};
 use ccode_domain::message::{Attachment, AttachmentData, Message, Role};
 use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, StreamEvent, ToolDefinition};
 use ccode_provider::anthropic::AnthropicAdapter;
 use ccode_provider::factory;
+use ccode_provider::openai::OpenAiAdapter;
 use ccode_provider::openrouter::OpenRouterAdapter;
 use futures::StreamExt;
 use wiremock::matchers::{method, path};
@@ -244,6 +245,145 @@ fn anthropic_factory_passes_capabilities_from_config() {
     let caps = client.capabilities();
     assert!(caps.vision);
     assert_eq!(caps.context_window, Some(200_000));
+}
+
+#[test]
+fn openai_adapter_capabilities_follow_config() {
+    let adapter = OpenAiAdapter::new(
+        "test-key",
+        "http://example.com",
+        "gpt-4o",
+        true,
+        Some(123_456),
+    );
+
+    let caps = adapter.capabilities();
+    assert!(caps.vision);
+    assert_eq!(caps.context_window, Some(123_456));
+}
+
+#[test]
+fn openai_factory_passes_capabilities_from_config() {
+    let mut config = Config::default();
+    config.providers.openai = Some(OpenAiConfig {
+        api_key: Some("test-key".to_string()),
+        default_model: Some("gpt-4o".to_string()),
+        vision: Some(true),
+        context_window: Some(200_000),
+    });
+
+    let client = factory::build("openai", &config).expect("openai client should build");
+    let caps = client.capabilities();
+    assert!(caps.vision);
+    assert_eq!(caps.context_window, Some(200_000));
+}
+
+#[tokio::test]
+async fn openai_adapter_serializes_base64_image_as_image_url() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = OpenAiAdapter::new("key", server.uri(), "gpt-4o", true, None);
+    let mut user = Message::new("u1", Role::User, "Describe this image", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/png".to_string(),
+        data: AttachmentData::Base64("aGVsbG8=".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        "Describe this image"
+    );
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+    assert_eq!(
+        body["messages"][0]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,aGVsbG8="
+    );
+}
+
+#[tokio::test]
+async fn openai_adapter_serializes_url_image_as_image_url() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = OpenAiAdapter::new("key", server.uri(), "gpt-4o", true, None);
+    let mut user = Message::new("u1", Role::User, "What is in this image?", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/jpeg".to_string(),
+        data: AttachmentData::Url("https://example.com/image.jpg".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        "What is in this image?"
+    );
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+    assert_eq!(
+        body["messages"][0]["content"][1]["image_url"]["url"],
+        "https://example.com/image.jpg"
+    );
+}
+
+#[tokio::test]
+async fn openai_adapter_ignores_attachments_when_vision_disabled() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = OpenAiAdapter::new("key", server.uri(), "gpt-4o", false, None);
+    let mut user = Message::new("u1", Role::User, "plain text only", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/png".to_string(),
+        data: AttachmentData::Base64("aGVsbG8=".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"], "plain text only");
 }
 
 #[tokio::test]

@@ -23,7 +23,7 @@ wiremock = "0.6"
 tokio    = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [features]
-default = ["provider-openrouter", "provider-zhipu", "provider-llamacpp", "provider-anthropic"]
+default = ["provider-openrouter", "provider-zhipu", "provider-openai", "provider-llamacpp", "provider-anthropic"]
 provider-openrouter  = []
 provider-zhipu       = []
 provider-openai      = []

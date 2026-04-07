@@ -556,7 +556,7 @@ mod tests {
     use ccode_domain::session::{Session, SessionId, SessionSummary};
     use ccode_ports::{
         PortError,
-        provider::{LlmError, LlmResponse},
+        provider::{LlmError, LlmResponse, ProviderCapabilities},
     };
     use futures::stream;
     use std::collections::VecDeque;
@@ -608,6 +608,13 @@ mod tests {
 
         fn default_model(&self) -> &str {
             "mock-model"
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                vision: false,
+                context_window: None,
+            }
         }
 
         async fn health_check(&self) -> Result<(), LlmError> {

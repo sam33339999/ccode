@@ -2,7 +2,9 @@ mod client;
 mod types;
 
 use async_trait::async_trait;
-use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
+use ccode_ports::provider::{
+    LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream, ProviderCapabilities,
+};
 
 pub use client::OpenAiCompatClient;
 
@@ -34,6 +36,13 @@ impl LlmClient for OpenAiCompatAdapter {
 
     fn default_model(&self) -> &str {
         &self.client.default_model
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            vision: false,
+            context_window: None,
+        }
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

@@ -312,7 +312,7 @@ pub fn build_orchestrator(runtime: Arc<ManagedWorkerRuntime>) -> Arc<dyn MultiAg
 mod tests {
     use super::*;
     use ccode_ports::{
-        provider::{LlmError, LlmRequest, LlmResponse, LlmStream},
+        provider::{LlmError, LlmRequest, LlmResponse, LlmStream, ProviderCapabilities},
         repositories::SessionRepository,
         tool::Permission,
     };
@@ -328,6 +328,13 @@ mod tests {
 
         fn default_model(&self) -> &str {
             "dummy-model"
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                vision: false,
+                context_window: None,
+            }
         }
 
         async fn health_check(&self) -> Result<(), LlmError> {

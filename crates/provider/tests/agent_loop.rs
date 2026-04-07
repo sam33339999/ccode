@@ -10,7 +10,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use ccode_domain::message::{Message, Role, ToolCall};
 use ccode_ports::provider::{
-    LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream, StreamEvent, ToolDefinition,
+    LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream, ProviderCapabilities, StreamEvent,
+    ToolDefinition,
 };
 use futures::{StreamExt, stream};
 
@@ -38,6 +39,13 @@ impl LlmClient for StepClient {
 
     fn default_model(&self) -> &str {
         "mock-model"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            vision: false,
+            context_window: None,
+        }
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

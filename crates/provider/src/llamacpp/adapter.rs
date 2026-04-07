@@ -1,6 +1,8 @@
 use crate::openai_compat::OpenAiCompatAdapter;
 use async_trait::async_trait;
-use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream};
+use ccode_ports::provider::{
+    LlmClient, LlmError, LlmRequest, LlmResponse, LlmStream, ProviderCapabilities,
+};
 
 pub struct LlamaCppAdapter {
     adapter: OpenAiCompatAdapter,
@@ -26,6 +28,13 @@ impl LlmClient for LlamaCppAdapter {
 
     fn default_model(&self) -> &str {
         self.adapter.default_model()
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            vision: false,
+            context_window: None,
+        }
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

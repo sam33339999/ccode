@@ -38,6 +38,12 @@ pub struct TokenUsage {
     pub total_tokens: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    pub vision: bool,
+    pub context_window: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     /// Incremental content delta from the model.
@@ -83,6 +89,9 @@ pub trait LlmClient: Send + Sync {
 
     /// Default model for this provider.
     fn default_model(&self) -> &str;
+
+    /// Static capabilities for this provider.
+    fn capabilities(&self) -> ProviderCapabilities;
 
     /// Liveness check.
     async fn health_check(&self) -> Result<(), LlmError>;

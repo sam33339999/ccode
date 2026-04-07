@@ -14,6 +14,8 @@ impl ZhipuAdapter {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
         title: Option<String>,
+        vision: bool,
+        context_window: Option<usize>,
     ) -> Self {
         let mut extra_headers = Vec::new();
         if let Some(t) = title {
@@ -27,8 +29,8 @@ impl ZhipuAdapter {
                 default_model,
                 extra_headers,
                 ProviderCapabilities {
-                    vision: false,
-                    context_window: None,
+                    vision,
+                    context_window,
                 },
             ),
         }
@@ -46,10 +48,7 @@ impl LlmClient for ZhipuAdapter {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            vision: false,
-            context_window: None,
-        }
+        self.adapter.capabilities()
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

@@ -6,6 +6,8 @@ use ccode_ports::provider::{
 
 pub struct AnthropicAdapter {
     client: AnthropicCompatClient,
+    supports_vision: bool,
+    context_window: Option<usize>,
 }
 
 impl AnthropicAdapter {
@@ -14,8 +16,20 @@ impl AnthropicAdapter {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
     ) -> Self {
+        Self::new_with_capabilities(api_key, base_url, default_model, false, None)
+    }
+
+    pub fn new_with_capabilities(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        default_model: impl Into<String>,
+        supports_vision: bool,
+        context_window: Option<usize>,
+    ) -> Self {
         Self {
-            client: AnthropicCompatClient::new(api_key, base_url, default_model),
+            client: AnthropicCompatClient::new(api_key, base_url, default_model, supports_vision),
+            supports_vision,
+            context_window,
         }
     }
 
@@ -27,7 +41,15 @@ impl AnthropicAdapter {
         default_model: impl Into<String>,
     ) -> Self {
         Self {
-            client: AnthropicCompatClient::new_for_test(http, api_key, base_url, default_model),
+            client: AnthropicCompatClient::new_for_test(
+                http,
+                api_key,
+                base_url,
+                default_model,
+                false,
+            ),
+            supports_vision: false,
+            context_window: None,
         }
     }
 }
@@ -44,8 +66,8 @@ impl LlmClient for AnthropicAdapter {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            vision: false,
-            context_window: None,
+            vision: self.supports_vision,
+            context_window: self.context_window,
         }
     }
 

@@ -1,6 +1,6 @@
 use super::types::*;
 use async_stream::stream;
-use ccode_domain::message::{Role, ToolCall};
+use ccode_domain::message::{AttachmentData, Role, ToolCall};
 use ccode_ports::provider::{
     LlmError, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
 };
@@ -26,6 +26,7 @@ pub struct AnthropicCompatClient {
     pub api_key: String,
     pub base_url: String,
     pub default_model: String,
+    supports_vision: bool,
 }
 
 impl AnthropicCompatClient {
@@ -33,12 +34,14 @@ impl AnthropicCompatClient {
         api_key: impl Into<String>,
         base_url: impl Into<String>,
         default_model: impl Into<String>,
+        supports_vision: bool,
     ) -> Self {
         Self {
             client: reqwest::Client::new(),
             api_key: api_key.into(),
             base_url: base_url.into(),
             default_model: default_model.into(),
+            supports_vision,
         }
     }
 
@@ -48,12 +51,14 @@ impl AnthropicCompatClient {
         api_key: impl Into<String>,
         base_url: impl Into<String>,
         default_model: impl Into<String>,
+        supports_vision: bool,
     ) -> Self {
         Self {
             client,
             api_key: api_key.into(),
             base_url: base_url.into(),
             default_model: default_model.into(),
+            supports_vision,
         }
     }
 
@@ -78,7 +83,10 @@ impl AnthropicCompatClient {
     /// 2. Assistant + tool_calls → content 為 block 陣列（text block + tool_use blocks）
     /// 3. Tool（工具結果）→ role="user"，content 為 tool_result block 陣列；
     ///    **連續多個 Tool 訊息必須合併成同一個 user 訊息**（Anthropic 禁止連續同 role）
-    fn split_system(&self, req: &LlmRequest) -> (Option<String>, Vec<AnthropicMessage>) {
+    fn split_system(
+        &self,
+        req: &LlmRequest,
+    ) -> Result<(Option<String>, Vec<AnthropicMessage>), LlmError> {
         use serde_json::{Value, json};
 
         let mut system_parts: Vec<String> = Vec::new();
@@ -155,7 +163,7 @@ impl AnthropicCompatClient {
                 Role::User => {
                     messages.push(AnthropicMessage {
                         role: "user".into(),
-                        content: Value::String(m.content.clone()),
+                        content: self.build_user_content(m)?,
                     });
                     i += 1;
                 }
@@ -169,15 +177,60 @@ impl AnthropicCompatClient {
             Some(system_parts.join("\n"))
         };
 
-        (system, messages)
+        Ok((system, messages))
     }
 
-    fn build_body(&self, req: &LlmRequest, stream: bool) -> AnthropicRequest {
+    fn build_user_content(
+        &self,
+        m: &ccode_domain::message::Message,
+    ) -> Result<serde_json::Value, LlmError> {
+        use serde_json::{Value, json};
+
+        if !self.supports_vision {
+            return Ok(Value::String(m.content.clone()));
+        }
+
+        let mut blocks = Vec::new();
+        if !m.content.is_empty() {
+            blocks.push(json!({
+                "type": "text",
+                "text": m.content
+            }));
+        }
+
+        if let Some(attachments) = &m.attachments {
+            for attachment in attachments {
+                match &attachment.data {
+                    AttachmentData::Base64(data) => blocks.push(json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": attachment.media_type,
+                            "data": data,
+                        }
+                    })),
+                    AttachmentData::Url(_) => {
+                        return Err(LlmError::InvalidResponse(
+                            "Anthropic does not support image URL source".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if blocks.is_empty() || (blocks.len() == 1 && blocks[0]["type"] == "text") {
+            Ok(Value::String(m.content.clone()))
+        } else {
+            Ok(Value::Array(blocks))
+        }
+    }
+
+    fn build_body(&self, req: &LlmRequest, stream: bool) -> Result<AnthropicRequest, LlmError> {
         let model = req
             .model
             .clone()
             .unwrap_or_else(|| self.default_model.clone());
-        let (system, messages) = self.split_system(req);
+        let (system, messages) = self.split_system(req)?;
         let tools: Vec<AnthropicTool> = req
             .tools
             .iter()
@@ -187,7 +240,7 @@ impl AnthropicCompatClient {
                 input_schema: t.parameters.clone(),
             })
             .collect();
-        AnthropicRequest {
+        Ok(AnthropicRequest {
             model,
             max_tokens: req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             system,
@@ -195,7 +248,7 @@ impl AnthropicCompatClient {
             stream,
             temperature: req.temperature,
             tools,
-        }
+        })
     }
 
     pub async fn health_check(&self) -> Result<(), LlmError> {
@@ -216,7 +269,7 @@ impl AnthropicCompatClient {
     }
 
     pub async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
-        let body = self.build_body(&req, false);
+        let body = self.build_body(&req, false)?;
         let resp = self
             .add_headers(self.client.post(self.messages_endpoint()).json(&body))
             .send()
@@ -255,7 +308,7 @@ impl AnthropicCompatClient {
     }
 
     pub async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
-        let body = self.build_body(&req, true);
+        let body = self.build_body(&req, true)?;
         let resp = self
             .add_headers(self.client.post(self.messages_endpoint()).json(&body))
             .send()

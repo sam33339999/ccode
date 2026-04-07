@@ -77,10 +77,12 @@ pub fn build(name: &str, config: &Config) -> Result<Arc<dyn LlmClient>, FactoryE
             let api_key = cfg
                 .resolved_api_key()
                 .ok_or(FactoryError::NotConfigured("anthropic"))?;
-            Ok(Arc::new(AnthropicAdapter::new(
+            Ok(Arc::new(AnthropicAdapter::new_with_capabilities(
                 api_key,
                 cfg.resolved_base_url(),
                 cfg.resolved_default_model(),
+                cfg.vision.unwrap_or(false),
+                cfg.context_window,
             )))
         }
         other => Err(FactoryError::Unknown(other.into())),

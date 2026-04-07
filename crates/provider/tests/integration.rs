@@ -10,9 +10,11 @@
 
 use std::time::Duration;
 
+use ccode_config::schema::{AnthropicConfig, Config};
 use ccode_domain::message::{Attachment, AttachmentData, Message, Role};
 use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, StreamEvent, ToolDefinition};
 use ccode_provider::anthropic::AnthropicAdapter;
+use ccode_provider::factory;
 use ccode_provider::openrouter::OpenRouterAdapter;
 use futures::StreamExt;
 use wiremock::matchers::{method, path};
@@ -212,6 +214,38 @@ fn openrouter_adapter_capabilities_follow_config() {
     assert_eq!(caps.context_window, Some(123_456));
 }
 
+#[test]
+fn anthropic_adapter_capabilities_follow_config() {
+    let adapter = AnthropicAdapter::new_with_capabilities(
+        "test-key",
+        "http://example.com",
+        "claude-3-5-sonnet-20241022",
+        true,
+        Some(123_456),
+    );
+
+    let caps = adapter.capabilities();
+    assert!(caps.vision);
+    assert_eq!(caps.context_window, Some(123_456));
+}
+
+#[test]
+fn anthropic_factory_passes_capabilities_from_config() {
+    let mut config = Config::default();
+    config.providers.anthropic = Some(AnthropicConfig {
+        api_key: Some("test-key".to_string()),
+        default_model: Some("claude-3-5-sonnet-20241022".to_string()),
+        base_url: Some("http://example.com".to_string()),
+        vision: Some(true),
+        context_window: Some(200_000),
+    });
+
+    let client = factory::build("anthropic", &config).expect("anthropic client should build");
+    let caps = client.capabilities();
+    assert!(caps.vision);
+    assert_eq!(caps.context_window, Some(200_000));
+}
+
 #[tokio::test]
 async fn openrouter_adapter_serializes_base64_image_as_image_url() {
     let server = MockServer::start().await;
@@ -300,6 +334,132 @@ async fn openrouter_adapter_ignores_attachments_when_vision_disabled() {
         .await;
 
     let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None, false, None);
+    let mut user = Message::new("u1", Role::User, "plain text only", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/png".to_string(),
+        data: AttachmentData::Base64("aGVsbG8=".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"], "plain text only");
+}
+
+#[tokio::test]
+async fn anthropic_adapter_serializes_base64_image_as_native_image_block() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = AnthropicAdapter::new_with_capabilities(
+        "key",
+        server.uri(),
+        "claude-3-5-sonnet-20241022",
+        true,
+        None,
+    );
+    let mut user = Message::new("u1", Role::User, "Describe this image", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/png".to_string(),
+        data: AttachmentData::Base64("aGVsbG8=".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        "Describe this image"
+    );
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+    assert_eq!(
+        body["messages"][0]["content"][1]["source"],
+        serde_json::json!({
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "aGVsbG8="
+        })
+    );
+}
+
+#[tokio::test]
+async fn anthropic_adapter_rejects_url_image_source() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = AnthropicAdapter::new_with_capabilities(
+        "key",
+        server.uri(),
+        "claude-3-5-sonnet-20241022",
+        true,
+        None,
+    );
+    let mut user = Message::new("u1", Role::User, "What is in this image?", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/jpeg".to_string(),
+        data: AttachmentData::Url("https://example.com/image.jpg".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    let err = adapter
+        .complete(req)
+        .await
+        .expect_err("url image source should be rejected");
+    match err {
+        LlmError::InvalidResponse(msg) => {
+            assert_eq!(msg, "Anthropic does not support image URL source")
+        }
+        other => panic!("expected InvalidResponse, got {other:?}"),
+    }
+
+    let received = server.received_requests().await.unwrap();
+    assert!(
+        received.is_empty(),
+        "request should fail before network call when URL image is provided"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_adapter_ignores_attachments_when_vision_disabled() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = AnthropicAdapter::new("key", server.uri(), "claude-3-5-sonnet-20241022");
     let mut user = Message::new("u1", Role::User, "plain text only", 0);
     user.attachments = Some(vec![Attachment {
         media_type: "image/png".to_string(),

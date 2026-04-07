@@ -1,6 +1,6 @@
 use ccode_domain::llm::{
-    ContentBlock, LlmRequest, LlmResponse, Message, Role, StopReason, StreamEvent, TokenUsage,
-    ToolDefinition, constants,
+    ContentBlock, ImageData, ImageMediaType, ImageSource, LlmRequest, LlmResponse, Message, Role,
+    StopReason, StreamEvent, TokenUsage, ToolDefinition, constants,
 };
 use serde_json::json;
 
@@ -14,6 +14,12 @@ fn canonical_llm_types_serde_and_constants_match_contract() {
             },
             ContentBlock::Thinking {
                 thinking: "reasoning".to_string(),
+            },
+            ContentBlock::Image {
+                source: ImageSource {
+                    media_type: ImageMediaType::Png,
+                    data: ImageData::Url("https://example.com/image.png".to_string()),
+                },
             },
         ],
     };
@@ -96,6 +102,7 @@ fn canonical_llm_types_serde_and_constants_match_contract() {
         "tool_result"
     );
     assert_eq!(constants::api_types::CONTENT_BLOCK_THINKING, "thinking");
+    assert_eq!(constants::api_types::CONTENT_BLOCK_IMAGE, "image");
     assert_eq!(constants::api_types::STOP_REASON_END_TURN, "end_turn");
     assert_eq!(constants::api_types::STOP_REASON_TOOL_USE, "tool_use");
     assert_eq!(constants::api_types::STOP_REASON_MAX_TOKENS, "max_tokens");
@@ -106,6 +113,12 @@ fn canonical_llm_types_serde_and_constants_match_contract() {
     assert_eq!(constants::api_types::ROLE_USER, "user");
     assert_eq!(constants::api_types::ROLE_ASSISTANT, "assistant");
     assert_eq!(constants::api_types::ROLE_SYSTEM, "system");
+    assert_eq!(constants::api_types::IMAGE_MEDIA_TYPE_JPEG, "jpeg");
+    assert_eq!(constants::api_types::IMAGE_MEDIA_TYPE_PNG, "png");
+    assert_eq!(constants::api_types::IMAGE_MEDIA_TYPE_GIF, "gif");
+    assert_eq!(constants::api_types::IMAGE_MEDIA_TYPE_WEBP, "webp");
+    assert_eq!(constants::api_types::IMAGE_DATA_BASE64, "base64");
+    assert_eq!(constants::api_types::IMAGE_DATA_URL, "url");
 
     // config constants
     assert_eq!(constants::config::ENV_OPENAI_API_KEY, "OPENAI_API_KEY");

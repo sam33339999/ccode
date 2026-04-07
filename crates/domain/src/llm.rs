@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -19,6 +21,28 @@ pub enum ContentBlock {
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageSource {
+    pub media_type: ImageMediaType,
+    pub data: ImageData,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageMediaType {
+    Jpeg,
+    Png,
+    Gif,
+    Webp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ImageData {
+    Base64(String),
+    Url(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -100,9 +124,16 @@ pub enum StreamEvent {
 pub mod constants {
     pub mod api_types {
         pub const CONTENT_BLOCK_TEXT: &str = "text";
+        pub const CONTENT_BLOCK_IMAGE: &str = "image";
         pub const CONTENT_BLOCK_TOOL_USE: &str = "tool_use";
         pub const CONTENT_BLOCK_TOOL_RESULT: &str = "tool_result";
         pub const CONTENT_BLOCK_THINKING: &str = "thinking";
+        pub const IMAGE_MEDIA_TYPE_JPEG: &str = "jpeg";
+        pub const IMAGE_MEDIA_TYPE_PNG: &str = "png";
+        pub const IMAGE_MEDIA_TYPE_GIF: &str = "gif";
+        pub const IMAGE_MEDIA_TYPE_WEBP: &str = "webp";
+        pub const IMAGE_DATA_BASE64: &str = "base64";
+        pub const IMAGE_DATA_URL: &str = "url";
 
         pub const STOP_REASON_END_TURN: &str = "end_turn";
         pub const STOP_REASON_TOOL_USE: &str = "tool_use";

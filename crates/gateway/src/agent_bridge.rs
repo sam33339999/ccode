@@ -48,6 +48,7 @@ pub async fn run_agent(
         session_id.clone(),
         system_prompt,
         text,
+        Vec::new(),
         tool_definitions,
         &on_delta,
         &execute_tool,

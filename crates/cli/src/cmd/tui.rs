@@ -1660,6 +1660,7 @@ fn spawn_agent_turn(
                 session_id,
                 None,
                 user_content,
+                Vec::new(),
                 tool_definitions,
                 &on_delta,
                 &execute_tool,

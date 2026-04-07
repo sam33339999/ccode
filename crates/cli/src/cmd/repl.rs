@@ -58,7 +58,8 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
         AgentRunCommand::new(state.session_repo, provider).with_context(state.context_policy),
     );
     let mut session_id: Option<String> = args.session;
-    let persona = ccode_bootstrap::skill::augment_with_skill_catalog(args.persona, &state.skill_catalog);
+    let persona =
+        ccode_bootstrap::skill::augment_with_skill_catalog(args.persona, &state.skill_catalog);
     let no_confirm = args.no_confirm;
     let skills = state.skills.clone();
 
@@ -268,6 +269,7 @@ pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
                             session_id.clone(),
                             persona_once.take(),
                             input,
+                            Vec::new(),
                             tools,
                             &on_delta,
                             &execute_tool,

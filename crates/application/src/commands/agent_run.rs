@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use async_trait::async_trait;
 use ccode_domain::{
+    llm::{ImageData, ImageMediaType, ImageSource},
     message::{Message, Role},
     session::{Session, SessionId},
 };
@@ -59,6 +60,8 @@ pub struct AgentRunCommand<R> {
 
 /// Heuristic used for local token estimation when provider usage is unavailable.
 pub const CHARS_PER_TOKEN_ESTIMATE: usize = 4;
+pub const ANTHROPIC_IMAGE_CONTEXT_TOKENS: usize = 1600;
+pub const DEFAULT_IMAGE_CONTEXT_TOKENS: usize = 1000;
 
 #[derive(Debug, Clone, Default)]
 pub struct RunMetrics {
@@ -162,11 +165,13 @@ impl<R: SessionRepository> AgentRunCommand<R> {
 
     /// Full agentic loop — keeps calling the model and executing tools until
     /// the model produces no more tool calls (or max_iterations is reached).
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
         session_id: Option<String>,
         system_prompt: Option<String>,
         user_content: String,
+        images: Vec<ImageSource>,
         tools: Vec<ToolDefinition>,
         on_delta: &(dyn Fn(String) + Send + Sync),
         execute_tool: &ExecuteToolFn,
@@ -176,6 +181,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                 session_id,
                 system_prompt,
                 user_content,
+                images,
                 tools,
                 on_delta,
                 execute_tool,
@@ -184,11 +190,13 @@ impl<R: SessionRepository> AgentRunCommand<R> {
         Ok(outcome.session_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_with_metrics(
         &self,
         session_id: Option<String>,
         system_prompt: Option<String>,
         user_content: String,
+        images: Vec<ImageSource>,
         tools: Vec<ToolDefinition>,
         on_delta: &(dyn Fn(String) + Send + Sync),
         execute_tool: &ExecuteToolFn,
@@ -218,9 +226,24 @@ impl<R: SessionRepository> AgentRunCommand<R> {
             session.add_message(Message::new(sys_id, Role::System, prompt.clone(), now), now);
         }
 
+        if !images.is_empty() && !self.provider.capabilities().vision {
+            return Err(AppError::VisionNotSupported(
+                self.provider.name().to_string(),
+            ));
+        }
+
         // Add the user message
         let msg_id = format!("msg-{now}-u");
-        session.add_message(Message::new(msg_id, Role::User, user_content, now), now);
+        let mut user_message = Message::new(msg_id, Role::User, user_content, now);
+        if !images.is_empty() {
+            user_message.attachments = Some(
+                images
+                    .into_iter()
+                    .map(image_source_to_attachment)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        session.add_message(user_message, now);
         self.repo.save(&session).await?;
 
         let max_iterations = self.context.max_agent_iterations;
@@ -230,10 +253,11 @@ impl<R: SessionRepository> AgentRunCommand<R> {
             // ── Context compression ────────────────────────────────────────────
             // Trigger on total character size (not message count) to catch large
             // tool results that would overflow the model's context window.
+            let provider_name = self.provider.name();
             let total_chars: usize = session
                 .messages
                 .iter()
-                .map(|m| m.content.chars().count())
+                .map(|m| estimate_context_chars(m, provider_name))
                 .sum();
             if total_chars > self.context.compress_chars_threshold {
                 session =
@@ -549,6 +573,45 @@ pub fn estimate_tokens_from_chars(chars: usize) -> usize {
     chars.div_ceil(CHARS_PER_TOKEN_ESTIMATE)
 }
 
+pub fn estimate_image_context_tokens(provider_name: &str) -> usize {
+    if provider_name.eq_ignore_ascii_case("anthropic") {
+        ANTHROPIC_IMAGE_CONTEXT_TOKENS
+    } else {
+        DEFAULT_IMAGE_CONTEXT_TOKENS
+    }
+}
+
+pub fn estimate_context_chars(message: &Message, provider_name: &str) -> usize {
+    let text_chars = message.content.chars().count();
+    let image_chars = message
+        .attachments
+        .as_ref()
+        .map(|attachments| {
+            attachments.len()
+                * estimate_image_context_tokens(provider_name)
+                * CHARS_PER_TOKEN_ESTIMATE
+        })
+        .unwrap_or_default();
+    text_chars + image_chars
+}
+
+fn image_source_to_attachment(image: ImageSource) -> ccode_domain::message::Attachment {
+    let media_type = match image.media_type {
+        ImageMediaType::Jpeg => "image/jpeg",
+        ImageMediaType::Png => "image/png",
+        ImageMediaType::Gif => "image/gif",
+        ImageMediaType::Webp => "image/webp",
+    }
+    .to_string();
+
+    let data = match image.data {
+        ImageData::Base64(raw) => ccode_domain::message::AttachmentData::Base64(raw),
+        ImageData::Url(url) => ccode_domain::message::AttachmentData::Url(url),
+    };
+
+    ccode_domain::message::Attachment { media_type, data }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,6 +661,9 @@ mod tests {
 
     struct MockProvider {
         streams: Mutex<VecDeque<Vec<Result<StreamEvent, LlmError>>>>,
+        stream_calls: AtomicUsize,
+        last_stream_request: Mutex<Option<LlmRequest>>,
+        supports_vision: bool,
     }
 
     #[async_trait]
@@ -612,7 +678,7 @@ mod tests {
 
         fn capabilities(&self) -> ProviderCapabilities {
             ProviderCapabilities {
-                vision: false,
+                vision: self.supports_vision,
                 context_window: None,
             }
         }
@@ -629,7 +695,9 @@ mod tests {
             })
         }
 
-        async fn stream(&self, _req: LlmRequest) -> Result<LlmStream, LlmError> {
+        async fn stream(&self, req: LlmRequest) -> Result<LlmStream, LlmError> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_stream_request.lock().expect("poisoned") = Some(req);
             let mut streams = self.streams.lock().expect("poisoned");
             let events = streams.pop_front().unwrap_or_default();
             Ok(Box::pin(stream::iter(events)))
@@ -675,6 +743,9 @@ mod tests {
             streams: Mutex::new(VecDeque::from([vec![Ok(StreamEvent::Done {
                 usage: None,
             })]])),
+            stream_calls: AtomicUsize::new(0),
+            last_stream_request: Mutex::new(None),
+            supports_vision: false,
         });
         let lifecycle = Arc::new(MockLifecycle {
             fail_cleanup: true,
@@ -688,6 +759,7 @@ mod tests {
                 None,
                 None,
                 "hello".to_string(),
+                Vec::new(),
                 Vec::new(),
                 &|_| {},
                 &|_, _| Box::pin(async { Ok(String::new()) }),
@@ -707,6 +779,9 @@ mod tests {
             streams: Mutex::new(VecDeque::from([vec![Err(LlmError::StreamInterrupted(
                 "ctrl-c".to_string(),
             ))]])),
+            stream_calls: AtomicUsize::new(0),
+            last_stream_request: Mutex::new(None),
+            supports_vision: false,
         });
         let lifecycle = Arc::new(MockLifecycle::default());
         let cmd =
@@ -717,6 +792,7 @@ mod tests {
                 None,
                 None,
                 "hello".to_string(),
+                Vec::new(),
                 Vec::new(),
                 &|_| {},
                 &|_, _| Box::pin(async { Ok(String::new()) }),
@@ -748,6 +824,9 @@ mod tests {
                 ],
                 vec![Ok(StreamEvent::Done { usage: None })],
             ])),
+            stream_calls: AtomicUsize::new(0),
+            last_stream_request: Mutex::new(None),
+            supports_vision: false,
         });
         let lifecycle = Arc::new(MockLifecycle::default());
         let cmd =
@@ -758,6 +837,7 @@ mod tests {
                 None,
                 None,
                 "hello".to_string(),
+                Vec::new(),
                 vec![ToolDefinition {
                     name: "echo".to_string(),
                     description: "echo".to_string(),
@@ -789,6 +869,9 @@ mod tests {
                     }),
                 }),
             ]])),
+            stream_calls: AtomicUsize::new(0),
+            last_stream_request: Mutex::new(None),
+            supports_vision: false,
         });
         let cmd = AgentRunCommand::new(repo, provider);
 
@@ -797,6 +880,7 @@ mod tests {
                 None,
                 None,
                 "hello".to_string(),
+                Vec::new(),
                 Vec::new(),
                 &|_| {},
                 &|_, _| Box::pin(async { Ok(String::new()) }),
@@ -823,5 +907,87 @@ mod tests {
         assert_eq!(estimate_tokens_from_chars(1), 1);
         assert_eq!(estimate_tokens_from_chars(4), 1);
         assert_eq!(estimate_tokens_from_chars(5), 2);
+    }
+
+    #[test]
+    fn estimate_image_context_tokens_prefers_anthropic_value() {
+        assert_eq!(estimate_image_context_tokens("anthropic"), 1600);
+        assert_eq!(estimate_image_context_tokens("Anthropic"), 1600);
+        assert_eq!(estimate_image_context_tokens("openrouter"), 1000);
+    }
+
+    #[tokio::test]
+    async fn run_with_images_on_non_vision_provider_returns_guard_error_without_stream_call() {
+        let repo = MockRepo::default();
+        let provider = Arc::new(MockProvider {
+            streams: Mutex::new(VecDeque::new()),
+            stream_calls: AtomicUsize::new(0),
+            last_stream_request: Mutex::new(None),
+            supports_vision: false,
+        });
+        let cmd = AgentRunCommand::new(repo, provider.clone());
+
+        let result = cmd
+            .run_with_metrics(
+                None,
+                None,
+                "hello".to_string(),
+                vec![ImageSource {
+                    media_type: ImageMediaType::Png,
+                    data: ImageData::Base64("aGVsbG8=".to_string()),
+                }],
+                Vec::new(),
+                &|_| {},
+                &|_, _| Box::pin(async { Ok(String::new()) }),
+            )
+            .await;
+
+        assert!(matches!(result, Err(AppError::VisionNotSupported(name)) if name == "mock"));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn run_with_images_attaches_to_first_user_message() {
+        let repo = MockRepo::default();
+        let provider = Arc::new(MockProvider {
+            streams: Mutex::new(VecDeque::from([vec![Ok(StreamEvent::Done {
+                usage: None,
+            })]])),
+            stream_calls: AtomicUsize::new(0),
+            last_stream_request: Mutex::new(None),
+            supports_vision: true,
+        });
+        let cmd = AgentRunCommand::new(repo, provider.clone());
+
+        let _ = cmd
+            .run_with_metrics(
+                None,
+                None,
+                "describe image".to_string(),
+                vec![ImageSource {
+                    media_type: ImageMediaType::Png,
+                    data: ImageData::Base64("aGVsbG8=".to_string()),
+                }],
+                Vec::new(),
+                &|_| {},
+                &|_, _| Box::pin(async { Ok(String::new()) }),
+            )
+            .await
+            .expect("run should succeed");
+
+        let req = provider
+            .last_stream_request
+            .lock()
+            .expect("poisoned")
+            .clone()
+            .expect("request exists");
+        let user = req
+            .messages
+            .iter()
+            .find(|m| matches!(m.role, Role::User))
+            .expect("user message exists");
+        assert_eq!(user.content, "describe image");
+        let attachments = user.attachments.as_ref().expect("attachments exist");
+        assert_eq!(attachments.len(), 1);
     }
 }

@@ -248,6 +248,7 @@ impl ToolPort for AgentTool {
                     resume_session_id,
                     persona,
                     prompt,
+                    Vec::new(),
                     tool_definitions,
                     &on_delta,
                     &execute_tool,

@@ -462,6 +462,14 @@ fn classify_app_error(error: &AppError, ctx: &ErrorContext) -> ErrorEnvelope {
         AppError::Domain(domain_error) => {
             classify_message_into_envelope(&domain_error.to_string(), ctx)
         }
+        AppError::VisionNotSupported(provider_name) => ErrorEnvelope::new(
+            ErrorCategory::Validation,
+            "This provider does not support image input.",
+            Some(format!(
+                "Switch to a vision-capable provider or remove image attachments. (provider={provider_name})"
+            )),
+            ctx,
+        ),
     }
 }
 
@@ -812,5 +820,18 @@ mod tests {
         let line = progress.render_line(estimate_tokens_from_chars(8));
         assert!(line.contains("out=2 tok"));
         assert!(line.contains("tok/s"));
+    }
+
+    #[test]
+    fn vision_not_supported_maps_to_friendly_validation_message() {
+        let rendered = classify_app_error(
+            &AppError::VisionNotSupported("openrouter".to_string()),
+            &ErrorContext::unknown(),
+        )
+        .render();
+
+        assert!(rendered.contains("[error:validation]"));
+        assert!(rendered.contains("does not support image input"));
+        assert!(rendered.contains("provider=openrouter"));
     }
 }

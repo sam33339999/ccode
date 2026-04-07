@@ -159,6 +159,7 @@ impl ToolPort for SpawnAgentTool {
                 resume_session_id,
                 persona,
                 message,
+                Vec::new(),
                 tool_definitions,
                 &on_delta,
                 &execute_tool,

@@ -85,6 +85,8 @@ pub fn build(name: &str, config: &Config) -> Result<Arc<dyn LlmClient>, FactoryE
                 cfg.resolved_api_key(),
                 cfg.resolved_base_url(),
                 cfg.resolved_default_model(),
+                cfg.vision.unwrap_or(false),
+                cfg.context_window,
             )))
         }
         #[cfg(feature = "provider-anthropic")]

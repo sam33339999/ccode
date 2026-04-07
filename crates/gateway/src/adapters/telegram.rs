@@ -11,17 +11,14 @@ use crate::server::GatewayState;
 /// Resolve a Telegram message: if it starts with `/skill-name`, load skill body;
 /// otherwise return the original text. Returns `None` if skill not found.
 fn resolve_skill_text(text: &str, state: &GatewayState) -> Option<String> {
-    if !text.starts_with('/') {
+    let Some(skill_token) = text.strip_prefix('/') else {
         return Some(text.to_string());
-    }
-    let skill_name = text[1..].trim();
+    };
+    let skill_name = skill_token.trim();
     if skill_name.is_empty() {
         return Some(text.to_string());
     }
-    match ccode_bootstrap::skill::load_skill_body(skill_name, &state.app_state.skills) {
-        Some(body) => Some(body),
-        None => None,
-    }
+    ccode_bootstrap::skill::load_skill_body(skill_name, &state.app_state.skills)
 }
 
 const TELEGRAM_SECRET_HEADER: &str = "X-Telegram-Bot-Api-Secret-Token";

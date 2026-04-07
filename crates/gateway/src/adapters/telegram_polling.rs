@@ -56,11 +56,10 @@ pub async fn run(
             Ok(updates) => {
                 for update in updates {
                     offset = update.update_id + 1;
-                    if let Some(msg) = update.message {
-                        if let Some(text) = msg.text {
-                            process_message(&state, &http_client, &base_url, msg.chat.id, text)
-                                .await;
-                        }
+                    if let Some(msg) = update.message
+                        && let Some(text) = msg.text
+                    {
+                        process_message(&state, &http_client, &base_url, msg.chat.id, text).await;
                     }
                 }
             }
@@ -121,8 +120,8 @@ async fn process_message(
 ) {
     // Resolve /skill-name activations: if text starts with '/', look up skill body.
     // Unknown skill names are silently dropped (not forwarded to the agent).
-    let text = if text.starts_with('/') {
-        let skill_name = text[1..].trim();
+    let text = if let Some(skill_token) = text.strip_prefix('/') {
+        let skill_name = skill_token.trim();
         match ccode_bootstrap::skill::load_skill_body(skill_name, &state.skills) {
             Some(body) => body,
             None => {

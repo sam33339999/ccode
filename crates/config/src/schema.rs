@@ -13,10 +13,45 @@ pub struct Config {
     #[serde(default)]
     pub context: ContextConfig,
     #[serde(default)]
+    pub image: ImageConfig,
+    #[serde(default)]
     pub remote_runtime: RemoteRuntimeConfig,
     #[serde(default)]
     pub tui: TuiConfig,
     pub gateway: Option<GatewayConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageStrategy {
+    Resize,
+    Quantize,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageConfig {
+    #[serde(default = "default_image_strategy")]
+    pub strategy: Option<ImageStrategy>,
+    #[serde(default = "default_image_max_dimension")]
+    pub max_dimension: Option<u32>,
+}
+
+impl Default for ImageConfig {
+    fn default() -> Self {
+        Self {
+            strategy: default_image_strategy(),
+            max_dimension: default_image_max_dimension(),
+        }
+    }
+}
+
+fn default_image_strategy() -> Option<ImageStrategy> {
+    Some(ImageStrategy::Resize)
+}
+
+fn default_image_max_dimension() -> Option<u32> {
+    Some(2048)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -185,6 +220,10 @@ pub struct OpenRouterConfig {
     pub site_url: Option<String>,
     /// Optional `X-Title` header sent to OpenRouter.
     pub site_name: Option<String>,
+    /// Whether this provider endpoint supports vision inputs.
+    pub vision: Option<bool>,
+    /// Maximum supported model context window (tokens).
+    pub context_window: Option<usize>,
 }
 
 impl OpenRouterConfig {
@@ -219,6 +258,10 @@ pub struct ZhipuConfig {
     pub base_url: Option<String>,
     /// Value for the `X-Title` header (required by the coding plan).
     pub title: Option<String>,
+    /// Whether this provider endpoint supports vision inputs.
+    pub vision: Option<bool>,
+    /// Maximum supported model context window (tokens).
+    pub context_window: Option<usize>,
 }
 
 impl ZhipuConfig {
@@ -247,6 +290,10 @@ impl ZhipuConfig {
 pub struct OpenAiConfig {
     pub api_key: Option<String>,
     pub default_model: Option<String>,
+    /// Whether this provider endpoint supports vision inputs.
+    pub vision: Option<bool>,
+    /// Maximum supported model context window (tokens).
+    pub context_window: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -257,6 +304,10 @@ pub struct AnthropicConfig {
     pub default_model: Option<String>,
     /// Override base URL. Defaults to `https://api.anthropic.com/v1`.
     pub base_url: Option<String>,
+    /// Whether this provider endpoint supports vision inputs.
+    pub vision: Option<bool>,
+    /// Maximum supported model context window (tokens).
+    pub context_window: Option<usize>,
 }
 
 impl AnthropicConfig {
@@ -290,6 +341,10 @@ pub struct LlamaCppConfig {
     pub base_url: Option<String>,
     /// Falls back to `LLAMACPP_DEFAULT_MODEL`. Defaults to `"default"` (ignored by server).
     pub default_model: Option<String>,
+    /// Whether this provider endpoint supports vision inputs.
+    pub vision: Option<bool>,
+    /// Maximum supported model context window (tokens).
+    pub context_window: Option<usize>,
 }
 
 impl LlamaCppConfig {

@@ -4,6 +4,14 @@
 # 所有 api_key / base_url / default_model 欄位均可省略，
 # 改用環境變數替代（各欄位旁有標注對應的 env var）。
 
+# ── Image ──────────────────────────────────────────────────────────────────────
+
+[image]
+# 圖像前處理策略: "resize" | "quantize" | "none"
+strategy = "resize"
+# 圖片長邊上限（像素）
+max_dimension = 2048
+
 # ── Routing ────────────────────────────────────────────────────────────────────
 
 [routing]
@@ -25,6 +33,8 @@ default_model = "openai/gpt-4o-mini"
 # base_url   = "https://openrouter.ai/api/v1"   # 通常不需改
 # site_url   = "https://yourapp.com"             # HTTP-Referer header（選填）
 # site_name  = "My App"                          # X-Title header（選填）
+# vision     = true                               # 是否支援圖片輸入（選填）
+# context_window = 200000                         # 模型上下文視窗上限（token，選填）
 
 # 智谱 AI（z.ai 國際站，OpenAI-compatible）
 # env: ZHIPU_API_KEY / ZHIPU_BASE_URL / ZHIPU_DEFAULT_MODEL
@@ -33,6 +43,8 @@ api_key      = "your-zhipu-api-key"
 default_model = "glm-4-plus"
 # base_url   = "https://api.z.ai/api/paas/v4"   # 通常不需改
 # title      = "My App"                          # X-Title header（coding 方案必填）
+# vision     = true                               # 是否支援圖片輸入（選填）
+# context_window = 128000                         # 模型上下文視窗上限（token，選填）
 
 # Anthropic（原生 Messages API，非 OpenAI-compat）
 # env: ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_DEFAULT_MODEL
@@ -40,6 +52,16 @@ default_model = "glm-4-plus"
 api_key      = "sk-ant-api03-..."
 default_model = "claude-opus-4-5"
 # base_url   = "https://api.anthropic.com/v1"    # 通常不需改
+# vision     = true                                # 是否支援圖片輸入（選填）
+# context_window = 200000                          # 模型上下文視窗上限（token，選填）
+
+# OpenAI
+# env: OPENAI_API_KEY / OPENAI_DEFAULT_MODEL
+[providers.openai]
+api_key      = "sk-..."
+default_model = "gpt-4o-mini"
+# vision     = true                               # 是否支援圖片輸入（選填）
+# context_window = 128000                         # 模型上下文視窗上限（token，選填）
 
 # llama.cpp 本地推理伺服器
 # 啟動方式: llama-server -m your-model.gguf --port 8080
@@ -48,6 +70,8 @@ default_model = "claude-opus-4-5"
 # api_key    = ""                                # 通常不需要（部分 auth 設定除外）
 # base_url   = "http://127.0.0.1:8080/v1"        # 通常不需改
 # default_model = "default"                      # llama.cpp 忽略此欄位
+# vision     = false                              # 是否支援圖片輸入（選填）
+# context_window = 8192                           # 模型上下文視窗上限（token，選填）
 
 # ── Sandbox ────────────────────────────────────────────────────────────────────
 # 控制 agent 可執行哪些本地操作

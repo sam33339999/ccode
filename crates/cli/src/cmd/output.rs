@@ -466,6 +466,10 @@ fn classify_app_error(error: &AppError, ctx: &ErrorContext) -> ErrorEnvelope {
 }
 
 fn classify_message_into_envelope(message: &str, ctx: &ErrorContext) -> ErrorEnvelope {
+    if let Some(provider_message) = message.strip_prefix("provider error: ") {
+        return classify_provider_error_message(provider_message, ctx);
+    }
+
     let lower = message.to_ascii_lowercase();
     if lower.contains("no llm provider configured")
         || lower.contains("not configured")

@@ -133,4 +133,75 @@ bot_token = "discord-bot-token"
         assert_eq!(discord.application_public_key, "discord-public-key");
         assert_eq!(discord.bot_token.as_deref(), Some("discord-bot-token"));
     }
+
+    #[test]
+    fn parses_image_and_provider_vision_config() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            f,
+            r#"
+[image]
+strategy = "quantize"
+max_dimension = 1024
+
+[providers.openrouter]
+vision = true
+context_window = 200000
+
+[providers.openai]
+vision = false
+context_window = 128000
+
+[providers.anthropic]
+vision = true
+context_window = 200000
+
+[providers.zhipu]
+vision = true
+context_window = 128000
+
+[providers.llamacpp]
+vision = false
+context_window = 8192
+"#
+        )
+        .unwrap();
+
+        let cfg = load_from(f.path()).unwrap();
+        assert_eq!(
+            cfg.image.strategy,
+            Some(crate::schema::ImageStrategy::Quantize)
+        );
+        assert_eq!(cfg.image.max_dimension, Some(1024));
+
+        let openrouter = cfg.providers.openrouter.unwrap();
+        assert_eq!(openrouter.vision, Some(true));
+        assert_eq!(openrouter.context_window, Some(200000));
+
+        let openai = cfg.providers.openai.unwrap();
+        assert_eq!(openai.vision, Some(false));
+        assert_eq!(openai.context_window, Some(128000));
+
+        let anthropic = cfg.providers.anthropic.unwrap();
+        assert_eq!(anthropic.vision, Some(true));
+        assert_eq!(anthropic.context_window, Some(200000));
+
+        let zhipu = cfg.providers.zhipu.unwrap();
+        assert_eq!(zhipu.vision, Some(true));
+        assert_eq!(zhipu.context_window, Some(128000));
+
+        let llamacpp = cfg.providers.llamacpp.unwrap();
+        assert_eq!(llamacpp.vision, Some(false));
+        assert_eq!(llamacpp.context_window, Some(8192));
+    }
+
+    #[test]
+    fn image_defaults_are_applied() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            cfg.image.strategy,
+            Some(crate::schema::ImageStrategy::Resize)
+        );
+        assert_eq!(cfg.image.max_dimension, Some(2048));
+    }
 }

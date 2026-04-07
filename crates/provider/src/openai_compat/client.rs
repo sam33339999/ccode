@@ -1,6 +1,6 @@
 use super::types::*;
 use async_stream::stream;
-use ccode_domain::message::{Role, ToolCall};
+use ccode_domain::message::{AttachmentData, Role, ToolCall};
 use ccode_ports::provider::{
     LlmError, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
 };
@@ -20,6 +20,7 @@ pub struct OpenAiCompatClient {
     pub base_url: String,
     pub default_model: String,
     extra_headers: Vec<(String, String)>,
+    supports_vision: bool,
 }
 
 impl OpenAiCompatClient {
@@ -28,6 +29,7 @@ impl OpenAiCompatClient {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
         extra_headers: Vec<(String, String)>,
+        supports_vision: bool,
     ) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -35,6 +37,7 @@ impl OpenAiCompatClient {
             base_url: base_url.into(),
             default_model: default_model.into(),
             extra_headers,
+            supports_vision,
         }
     }
 
@@ -55,7 +58,7 @@ impl OpenAiCompatClient {
                 if m.role == Role::Tool {
                     return ChatMessage {
                         role: "tool".into(),
-                        content: Some(m.content.clone()),
+                        content: Some(ChatMessageContent::Text(m.content.clone())),
                         tool_calls: None,
                         tool_call_id: m.tool_call_id.clone(),
                     };
@@ -77,7 +80,7 @@ impl OpenAiCompatClient {
                     let content = if m.content.is_empty() && tool_calls.is_some() {
                         None // 純工具呼叫，content 送 null
                     } else {
-                        Some(m.content.clone())
+                        Some(ChatMessageContent::Text(m.content.clone()))
                     };
                     return ChatMessage {
                         role: "assistant".into(),
@@ -87,9 +90,45 @@ impl OpenAiCompatClient {
                     };
                 }
                 // user / system
+                let content = if self.supports_vision {
+                    let mut blocks = Vec::new();
+                    if !m.content.is_empty() {
+                        blocks.push(ChatContentBlock::Text {
+                            text: m.content.clone(),
+                        });
+                    }
+                    if let Some(attachments) = &m.attachments {
+                        for attachment in attachments {
+                            let url = match &attachment.data {
+                                AttachmentData::Base64(data) => {
+                                    format!("data:{};base64,{}", attachment.media_type, data)
+                                }
+                                AttachmentData::Url(url) => url.clone(),
+                            };
+                            blocks.push(ChatContentBlock::ImageUrl {
+                                image_url: ChatImageUrl { url },
+                            });
+                        }
+                    }
+                    if blocks.is_empty() {
+                        Some(ChatMessageContent::Text(m.content.clone()))
+                    } else if blocks.len() == 1 {
+                        match blocks.into_iter().next() {
+                            Some(ChatContentBlock::Text { text }) => {
+                                Some(ChatMessageContent::Text(text))
+                            }
+                            Some(other) => Some(ChatMessageContent::Blocks(vec![other])),
+                            None => Some(ChatMessageContent::Text(m.content.clone())),
+                        }
+                    } else {
+                        Some(ChatMessageContent::Blocks(blocks))
+                    }
+                } else {
+                    Some(ChatMessageContent::Text(m.content.clone()))
+                };
                 ChatMessage {
                     role: role_str(&m.role).into(),
-                    content: Some(m.content.clone()),
+                    content,
                     tool_calls: None,
                     tool_call_id: None,
                 }

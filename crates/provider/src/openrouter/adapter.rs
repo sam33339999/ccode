@@ -15,6 +15,8 @@ impl OpenRouterAdapter {
         default_model: impl Into<String>,
         site_url: Option<String>,
         site_name: Option<String>,
+        vision: bool,
+        context_window: Option<usize>,
     ) -> Self {
         let mut extra_headers = Vec::new();
         if let Some(url) = site_url {
@@ -30,6 +32,10 @@ impl OpenRouterAdapter {
                 base_url,
                 default_model,
                 extra_headers,
+                ProviderCapabilities {
+                    vision,
+                    context_window,
+                },
             ),
         }
     }
@@ -46,10 +52,7 @@ impl LlmClient for OpenRouterAdapter {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            vision: false,
-            context_window: None,
-        }
+        self.adapter.capabilities()
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

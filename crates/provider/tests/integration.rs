@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use ccode_domain::message::{Message, Role};
+use ccode_domain::message::{Attachment, AttachmentData, Message, Role};
 use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, StreamEvent, ToolDefinition};
 use ccode_provider::anthropic::AnthropicAdapter;
 use ccode_provider::openrouter::OpenRouterAdapter;
@@ -154,7 +154,8 @@ async fn openai_adapter_sends_correct_wire_format() {
         .mount(&server)
         .await;
 
-    let adapter = OpenRouterAdapter::new("test-key", server.uri(), "gpt-4o", None, None);
+    let adapter =
+        OpenRouterAdapter::new("test-key", server.uri(), "gpt-4o", None, None, false, None);
     let req = LlmRequest {
         messages: vec![
             Message::new("s1", Role::System, "You are helpful.", 0),
@@ -192,6 +193,131 @@ async fn openai_adapter_sends_correct_wire_format() {
         .to_str()
         .unwrap();
     assert!(auth.starts_with("Bearer "), "must use Bearer auth");
+}
+
+#[test]
+fn openrouter_adapter_capabilities_follow_config() {
+    let adapter = OpenRouterAdapter::new(
+        "test-key",
+        "http://example.com",
+        "gpt-4o",
+        None,
+        None,
+        true,
+        Some(123_456),
+    );
+
+    let caps = adapter.capabilities();
+    assert!(caps.vision);
+    assert_eq!(caps.context_window, Some(123_456));
+}
+
+#[tokio::test]
+async fn openrouter_adapter_serializes_base64_image_as_image_url() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None, true, None);
+    let mut user = Message::new("u1", Role::User, "Describe this image", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/png".to_string(),
+        data: AttachmentData::Base64("aGVsbG8=".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        "Describe this image"
+    );
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+    assert_eq!(
+        body["messages"][0]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,aGVsbG8="
+    );
+}
+
+#[tokio::test]
+async fn openrouter_adapter_serializes_url_image_as_image_url() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None, true, None);
+    let mut user = Message::new("u1", Role::User, "What is in this image?", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/jpeg".to_string(),
+        data: AttachmentData::Url("https://example.com/image.jpg".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        "What is in this image?"
+    );
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+    assert_eq!(
+        body["messages"][0]["content"][1]["image_url"]["url"],
+        "https://example.com/image.jpg"
+    );
+}
+
+#[tokio::test]
+async fn openrouter_adapter_ignores_attachments_when_vision_disabled() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(openai_ok_body("ok")))
+        .mount(&server)
+        .await;
+
+    let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None, false, None);
+    let mut user = Message::new("u1", Role::User, "plain text only", 0);
+    user.attachments = Some(vec![Attachment {
+        media_type: "image/png".to_string(),
+        data: AttachmentData::Base64("aGVsbG8=".to_string()),
+    }]);
+    let req = LlmRequest {
+        messages: vec![user],
+        model: None,
+        max_tokens: Some(64),
+        temperature: None,
+        tools: vec![],
+    };
+
+    adapter.complete(req).await.expect("should succeed");
+
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["messages"][0]["content"], "plain text only");
 }
 
 // ── AC6: AnthropicAdapter::complete() ────────────────────────────────────────
@@ -232,7 +358,7 @@ async fn openai_adapter_complete_parses_response_correctly() {
         .mount(&server)
         .await;
 
-    let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None);
+    let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None, false, None);
     let resp = adapter
         .complete(simple_request())
         .await
@@ -312,7 +438,7 @@ async fn openai_adapter_stream_yields_ordered_delta_then_done() {
         .mount(&server)
         .await;
 
-    let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None);
+    let adapter = OpenRouterAdapter::new("key", server.uri(), "gpt-4o", None, None, false, None);
     let mut stream = adapter
         .stream(simple_request())
         .await
@@ -640,7 +766,15 @@ async fn switching_provider_in_config_requires_no_code_changes() {
         .await;
 
     let anthropic = AnthropicAdapter::new("key", anthropic_server.uri(), "claude");
-    let openai = OpenRouterAdapter::new("key", openai_server.uri(), "gpt-4o", None, None);
+    let openai = OpenRouterAdapter::new(
+        "key",
+        openai_server.uri(),
+        "gpt-4o",
+        None,
+        None,
+        false,
+        None,
+    );
 
     // Same generic function — zero provider-specific code
     let r1 = run_one_turn(&anthropic, "Say hello").await;

@@ -15,7 +15,17 @@ impl LlamaCppAdapter {
         default_model: impl Into<String>,
     ) -> Self {
         Self {
-            adapter: OpenAiCompatAdapter::new("llamacpp", api_key, base_url, default_model, vec![]),
+            adapter: OpenAiCompatAdapter::new(
+                "llamacpp",
+                api_key,
+                base_url,
+                default_model,
+                vec![],
+                ProviderCapabilities {
+                    vision: false,
+                    context_window: None,
+                },
+            ),
         }
     }
 }

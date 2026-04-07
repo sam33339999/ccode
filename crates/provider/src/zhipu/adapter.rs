@@ -26,6 +26,10 @@ impl ZhipuAdapter {
                 base_url,
                 default_model,
                 extra_headers,
+                ProviderCapabilities {
+                    vision: false,
+                    context_window: None,
+                },
             ),
         }
     }

@@ -50,16 +50,35 @@ pub(super) struct ChatRequest {
 /// - user/system:   content = Some(text)
 /// - assistant:     content = Some(text) 或 None（純 tool call 時），tool_calls = Some([...])
 /// - tool:          content = Some(result), tool_call_id = Some(id)
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub(super) struct ChatMessage {
     pub role: String,
     /// None 代表 null（assistant 只發工具呼叫時不含文字）
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<ChatMessageContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<OpenAiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(super) enum ChatMessageContent {
+    Text(String),
+    Blocks(Vec<ChatContentBlock>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(super) enum ChatContentBlock {
+    Text { text: String },
+    ImageUrl { image_url: ChatImageUrl },
+}
+
+#[derive(Serialize)]
+pub(super) struct ChatImageUrl {
+    pub url: String,
 }
 
 // ── Non-streaming response ─────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ pub use client::OpenAiCompatClient;
 pub struct OpenAiCompatAdapter {
     name: String,
     client: OpenAiCompatClient,
+    capabilities: ProviderCapabilities,
 }
 
 impl OpenAiCompatAdapter {
@@ -20,10 +21,18 @@ impl OpenAiCompatAdapter {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
         extra_headers: Vec<(String, String)>,
+        capabilities: ProviderCapabilities,
     ) -> Self {
         Self {
             name: name.into(),
-            client: OpenAiCompatClient::new(api_key, base_url, default_model, extra_headers),
+            client: OpenAiCompatClient::new(
+                api_key,
+                base_url,
+                default_model,
+                extra_headers,
+                capabilities.vision,
+            ),
+            capabilities,
         }
     }
 }
@@ -39,10 +48,7 @@ impl LlmClient for OpenAiCompatAdapter {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            vision: false,
-            context_window: None,
-        }
+        self.capabilities
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

@@ -32,6 +32,8 @@ pub fn build(name: &str, config: &Config) -> Result<Arc<dyn LlmClient>, FactoryE
                 cfg.resolved_default_model(),
                 cfg.site_url.clone(),
                 cfg.site_name.clone(),
+                cfg.vision.unwrap_or(false),
+                cfg.context_window,
             )))
         }
         #[cfg(feature = "provider-zhipu")]

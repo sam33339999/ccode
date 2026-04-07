@@ -15,6 +15,7 @@ members = [
     "crates/bootstrap",
     "crates/cli",
     "crates/gateway",
+    "crates/image-process",
 ]
 resolver = "2"
 

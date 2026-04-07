@@ -1,0 +1,11 @@
+[package]
+name = "ccode-image-process"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ccode-config = { workspace = true }
+imagequant = "4"
+png = "0.17"
+image = { version = "*", features = ["png", "jpeg", "webp", "gif"] }
+thiserror = { workspace = true }

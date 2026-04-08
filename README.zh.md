@@ -111,8 +111,10 @@ RUST_LOG=debug ccode-gateway
 2. 在 **General Information** 頁面複製 **Public Key**。
 3. 在 **Interactions Endpoint URL** 填入 `https://your-domain/webhook/discord`，儲存。
    - Discord 會發送 PING（type 1）驗證端點，gateway 自動回應 PONG。
-4. 在 **Slash Commands** 建立指令，例如 `/ask`，加上一個 `String` 類型的必填參數 `prompt`。
-5. 使用者輸入 `/ask prompt:你的問題` → gateway 執行 agent → 直接在頻道回覆。
+4. 在 **Slash Commands** 建立指令，例如 `/ask`，加入：
+   - `String` 類型必填參數 `prompt`
+   - `Attachment` 類型選填參數 `image`
+5. 使用者輸入 `/ask prompt:你的問題`（可另外附上 `image`）→ gateway 執行 agent → 直接在頻道回覆。
 
 ### 對話記憶（Session）
 

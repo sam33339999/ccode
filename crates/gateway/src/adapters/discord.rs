@@ -66,7 +66,8 @@ pub async fn handle(
                 .or(Some(interaction.token.clone()));
 
             let agent_reply =
-                match agent_bridge::run_agent(&state.app_state, text, session_id).await {
+                match agent_bridge::run_agent(&state.app_state, text, Vec::new(), session_id).await
+                {
                     Ok(reply) => reply,
                     Err(err) => {
                         tracing::error!(error = ?err, "discord run_agent failed");
@@ -149,7 +150,7 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use axum::response::IntoResponse;
     use ccode_bootstrap::wire_dev;
-    use ccode_config::schema::DiscordConfig;
+    use ccode_config::schema::{DiscordConfig, ImageConfig};
     use ed25519_dalek::{Signer, SigningKey};
 
     use crate::server::GatewayState;
@@ -232,6 +233,7 @@ mod tests {
                 application_public_key: public_key_hex,
                 bot_token: None,
             }),
+            image: ImageConfig::default(),
             http_client: reqwest::Client::new(),
         };
 

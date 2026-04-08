@@ -42,5 +42,5 @@ async fn main() -> Result<()> {
         .map(PathBuf::from);
 
     let state = ccode_bootstrap::wire_from_config_with_cwd(workdir_override)?;
-    server::start(state, port, cfg.gateway).await
+    server::start(state, port, cfg.gateway, cfg.image).await
 }

@@ -5,7 +5,7 @@ use anyhow::Result;
 use axum::routing::post;
 use axum::{Router, routing::get};
 use ccode_bootstrap::AppState;
-use ccode_config::schema::{DiscordConfig, GatewayConfig, TelegramConfig};
+use ccode_config::schema::{DiscordConfig, GatewayConfig, ImageConfig, TelegramConfig};
 use tokio::sync::watch;
 
 use crate::adapters;
@@ -15,10 +15,16 @@ pub struct GatewayState {
     pub app_state: Arc<AppState>,
     pub telegram: Option<TelegramConfig>,
     pub discord: Option<DiscordConfig>,
+    pub image: ImageConfig,
     pub http_client: reqwest::Client,
 }
 
-pub async fn start(state: AppState, port: u16, gateway_cfg: Option<GatewayConfig>) -> Result<()> {
+pub async fn start(
+    state: AppState,
+    port: u16,
+    gateway_cfg: Option<GatewayConfig>,
+    image_cfg: ImageConfig,
+) -> Result<()> {
     let (telegram_cfg, discord_cfg) = match gateway_cfg {
         Some(cfg) => (cfg.telegram, cfg.discord),
         None => (None, None),
@@ -36,6 +42,7 @@ pub async fn start(state: AppState, port: u16, gateway_cfg: Option<GatewayConfig
             let client_clone = http_client.clone();
             Some(tokio::spawn(adapters::telegram_polling::run(
                 cfg,
+                image_cfg.clone(),
                 state_clone,
                 client_clone,
                 shutdown_rx,
@@ -51,6 +58,7 @@ pub async fn start(state: AppState, port: u16, gateway_cfg: Option<GatewayConfig
         app_state,
         telegram: telegram_cfg,
         discord: discord_cfg,
+        image: image_cfg,
         http_client,
     };
 
@@ -134,7 +142,7 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
     use ccode_bootstrap::wire_dev;
-    use ccode_config::schema::{DiscordConfig, TelegramConfig};
+    use ccode_config::schema::{DiscordConfig, ImageConfig, TelegramConfig};
     use tower::util::ServiceExt;
 
     use crate::server::{GatewayState, build_router};
@@ -147,6 +155,7 @@ mod tests {
             app_state: Arc::new(wire_dev()),
             telegram,
             discord,
+            image: ImageConfig::default(),
             http_client: reqwest::Client::new(),
         }
     }

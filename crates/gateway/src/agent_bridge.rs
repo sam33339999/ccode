@@ -4,13 +4,16 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use ccode_application::commands::agent_run::AgentRunCommand;
+use ccode_application::error::AppError;
 use ccode_bootstrap::AppState;
 use ccode_bootstrap::skill::augment_with_skill_catalog;
+use ccode_domain::llm::ImageSource;
 
 #[allow(dead_code)]
 pub async fn run_agent(
     state: &AppState,
     text: String,
+    images: Vec<ImageSource>,
     session_id: Option<String>,
 ) -> anyhow::Result<String> {
     let provider = state
@@ -48,7 +51,7 @@ pub async fn run_agent(
         session_id.clone(),
         system_prompt,
         text,
-        Vec::new(),
+        images,
         tool_definitions,
         &on_delta,
         &execute_tool,
@@ -64,6 +67,15 @@ pub async fn run_agent(
     Ok(reply.lock().unwrap().clone())
 }
 
+pub fn is_vision_not_supported(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<AppError>(),
+            Some(AppError::VisionNotSupported(_))
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use ccode_bootstrap::wire_dev;
@@ -71,7 +83,7 @@ mod tests {
     #[tokio::test]
     async fn run_agent_returns_error_when_provider_missing() {
         let state = wire_dev();
-        let result = super::run_agent(&state, "hello".to_string(), None).await;
+        let result = super::run_agent(&state, "hello".to_string(), Vec::new(), None).await;
         assert!(result.is_err());
     }
 }

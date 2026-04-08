@@ -527,9 +527,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "ccode-application",
  "ccode-bootstrap",
  "ccode-config",
+ "ccode-domain",
+ "ccode-image-process",
  "clap",
  "ed25519-dalek",
  "hex",

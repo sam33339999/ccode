@@ -7,6 +7,8 @@ edition = "2024"
 ccode-bootstrap = { path = "../bootstrap" }
 ccode-application = { path = "../application" }
 ccode-config = { path = "../config" }
+ccode-domain = { path = "../domain" }
+ccode-image-process = { path = "../image-process" }
 axum = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 serde = { workspace = true }
@@ -17,6 +19,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
 clap = { workspace = true }
+base64 = "0.22"
 ed25519-dalek = "2"
 hex = "0.4"
 

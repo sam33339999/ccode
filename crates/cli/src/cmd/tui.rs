@@ -1,11 +1,12 @@
 use ccode_application::commands::agent_run::AgentRunCommand;
 use ccode_bootstrap::AppState as BootstrapState;
-use ccode_bootstrap::exports::ImageSource;
+use ccode_bootstrap::exports::{ImageSource, Role, SessionId};
 use ccode_bootstrap::worker_monitor;
 use chrono::{DateTime, Local};
 use clap::Args;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -186,20 +187,27 @@ fn terminal_supports_tui() -> bool {
 // ── Entry points ──────────────────────────────────────────────────────────────
 
 #[derive(Args, Default)]
-pub struct TuiArgs {}
-
-pub async fn run(_args: TuiArgs) -> anyhow::Result<()> {
-    run_ui().await
+pub struct TuiArgs {
+    /// Resume an existing session by ID
+    #[arg(short, long)]
+    pub session: Option<String>,
+    /// Skip tool confirmation prompts
+    #[arg(long)]
+    pub no_confirm: bool,
 }
 
-pub async fn run_ui() -> anyhow::Result<()> {
+pub async fn run(args: TuiArgs) -> anyhow::Result<()> {
+    run_ui(args.session, args.no_confirm).await
+}
+
+pub async fn run_ui(session: Option<String>, no_confirm: bool) -> anyhow::Result<()> {
     if !terminal_supports_tui() {
         anyhow::bail!("[tui] terminal does not support raw mode");
     }
-    run_ui_loop().await
+    run_ui_loop(session, no_confirm).await
 }
 
-async fn run_ui_loop() -> anyhow::Result<()> {
+async fn run_ui_loop(session: Option<String>, no_confirm: bool) -> anyhow::Result<()> {
     // Resolve the user's preferred theme via bootstrap (best-effort; falls back to "").
     let tui_theme_name = ccode_bootstrap::tui_theme().unwrap_or_default();
     let color_support = detect_color_support();
@@ -207,7 +215,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
 
     install_panic_restoration_hook();
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
 
     let terminal_guard = TerminalGuard;
     let backend = CrosstermBackend::new(io::stdout());
@@ -218,7 +226,10 @@ async fn run_ui_loop() -> anyhow::Result<()> {
     let mut app = AppState::with_theme(theme);
     let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiEvent>();
     let mut worker_monitor_rx = worker_monitor::subscribe_worker_events();
-    let mut runtime = RuntimeState::default();
+    let mut runtime = RuntimeState {
+        session_id: session,
+        ..Default::default()
+    };
     let always_allowed_tools: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     let runtime_deps = match state {
@@ -238,6 +249,38 @@ async fn run_ui_loop() -> anyhow::Result<()> {
         }
     };
 
+    // Load historical messages if restoring an existing session.
+    if let (Some(sid), RuntimeDeps::Ready { bootstrap_state }) =
+        (&runtime.session_id, &runtime_deps)
+    {
+        let session_id = SessionId(sid.clone());
+        match bootstrap_state.session_repo.find_by_id(&session_id).await {
+            Ok(Some(session)) => {
+                let count = session.messages.len();
+                for msg in session.messages {
+                    match msg.role {
+                        Role::User => {
+                            app.conversation.push(ConversationLine::User(msg.content))
+                        }
+                        Role::Assistant if !msg.content.is_empty() => {
+                            app.conversation.push(ConversationLine::Assistant(msg.content))
+                        }
+                        _ => {}
+                    }
+                }
+                app.push_info_status(format!(
+                    "session: {sid} ({count} messages restored)"
+                ));
+            }
+            Ok(None) => {
+                app.push_error_status(format!("session not found: {sid}"));
+            }
+            Err(e) => {
+                app.push_error_status(format!("failed to load session: {e}"));
+            }
+        }
+    }
+
     let mut last_draw = Instant::now() - DrawLimiter::interval();
     let mut dirty = true;
     while !app.should_quit {
@@ -248,6 +291,11 @@ async fn run_ui_loop() -> anyhow::Result<()> {
             &mut worker_monitor_rx,
             &mut dirty,
         );
+
+        // Keep the spinner animating while in-flight.
+        if app.in_flight {
+            dirty = true;
+        }
 
         // Auto-continue: when the coordinator's turn ended with running
         // workers and all workers have now reached a terminal state,
@@ -260,14 +308,17 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                     .push(ConversationLine::User(follow_up.clone()));
                 app.push_info_status("auto-continuing: all workers finished".to_string());
                 runtime.in_flight = true;
-                spawn_agent_turn(
+                app.in_flight = true;
+                app.spin_start = Instant::now();
+                runtime.abort_handle = Some(spawn_agent_turn(
                     Arc::clone(bootstrap_state),
                     runtime.session_id.clone(),
                     follow_up,
                     Vec::new(),
                     ui_tx.clone(),
                     Arc::clone(&always_allowed_tools),
-                );
+                    no_confirm,
+                ));
                 dirty = true;
             }
         }
@@ -282,6 +333,17 @@ async fn run_ui_loop() -> anyhow::Result<()> {
 
             match action {
                 AppAction::None => dirty = true,
+                AppAction::Abort => {
+                    if let Some(handle) = runtime.abort_handle.take() {
+                        handle.abort();
+                        runtime.in_flight = false;
+                        app.close_active_assistant();
+                        app.push_info_status("request cancelled".to_string());
+                    } else {
+                        app.should_quit = true;
+                    }
+                    dirty = true;
+                }
                 AppAction::Quit => app.should_quit = true,
                 AppAction::Submit(prompt) => {
                     if runtime.in_flight {
@@ -293,14 +355,17 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                         }
                         app.replace_last_user_message(parsed.prompt.clone());
                         runtime.in_flight = true;
-                        spawn_agent_turn(
+                        app.in_flight = true;
+                        app.spin_start = Instant::now();
+                        runtime.abort_handle = Some(spawn_agent_turn(
                             Arc::clone(bootstrap_state),
                             runtime.session_id.clone(),
                             parsed.prompt,
                             parsed.images,
                             ui_tx.clone(),
                             Arc::clone(&always_allowed_tools),
-                        );
+                            no_confirm,
+                        ));
                     } else {
                         app.push_error_status("provider unavailable".to_string());
                     }
@@ -313,6 +378,52 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                 AppAction::StopSelectedTask(task_id) => {
                     if let RuntimeDeps::Ready { bootstrap_state } = &runtime_deps {
                         spawn_task_stop(Arc::clone(bootstrap_state), task_id, ui_tx.clone());
+                    } else {
+                        app.push_error_status("provider unavailable".to_string());
+                    }
+                    dirty = true;
+                }
+                AppAction::ShowHelp => {
+                    app.show_help();
+                    dirty = true;
+                }
+                AppAction::ClearConversation => {
+                    app.clear_conversation();
+                    dirty = true;
+                }
+                AppAction::ResetSession => {
+                    app.clear_conversation();
+                    runtime.session_id = None;
+                    runtime.abort_handle.take().map(|h| h.abort());
+                    runtime.in_flight = false;
+                    app.push_info_status("session reset".to_string());
+                    dirty = true;
+                }
+                AppAction::Compact => {
+                    if runtime.in_flight {
+                        app.push_info_status(
+                            "cannot compact: request in progress".to_string(),
+                        );
+                    } else if let RuntimeDeps::Ready { bootstrap_state } = &runtime_deps {
+                        let prompt =
+                            "Please summarize our conversation so far into a compact context. \
+                             Keep all key decisions, code changes, and important details. \
+                             Replace the history with this summary going forward."
+                                .to_string();
+                        app.conversation
+                            .push(ConversationLine::User("[/compact]".to_string()));
+                        runtime.in_flight = true;
+                        app.in_flight = true;
+                        app.spin_start = Instant::now();
+                        runtime.abort_handle = Some(spawn_agent_turn(
+                            Arc::clone(bootstrap_state),
+                            runtime.session_id.clone(),
+                            prompt,
+                            Vec::new(),
+                            ui_tx.clone(),
+                            Arc::clone(&always_allowed_tools),
+                            no_confirm,
+                        ));
                     } else {
                         app.push_error_status("provider unavailable".to_string());
                     }
@@ -338,7 +449,9 @@ async fn run_ui_loop() -> anyhow::Result<()> {
 
 fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     let t = &app.theme;
-    let [conversation_pane, worker_pane, status_pane, input_pane] = split_layout(frame.area());
+    let input_lines = (app.render_input().lines().count() as u16).max(1);
+    let [conversation_pane, worker_pane, status_pane, input_pane] =
+        split_layout(frame.area(), input_lines);
 
     let conversation = Paragraph::new(app.render_conversation())
         .block(
@@ -382,13 +495,23 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     );
     frame.render_widget(status, status_pane);
 
-    let input_title =
-        "Input  [Enter]=send  [Shift+Enter]=newline  [Ctrl+C/Esc]=quit  [PgUp/PgDn]=scroll";
+    const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let input_title: String = if app.in_flight {
+        let frame = (app.spin_start.elapsed().as_millis() / 100) as usize % SPINNER.len();
+        let spin = SPINNER[frame];
+        if let Some(tool) = &app.active_tool {
+            format!("{spin} running: {tool}  [Esc]=cancel")
+        } else {
+            format!("{spin} thinking...  [Esc]=cancel")
+        }
+    } else {
+        "Input  [Enter]=send  [Shift+Enter]=newline  [Esc]=quit  [PgUp/PgDn]=scroll".to_string()
+    };
     let input = Paragraph::new(app.render_input())
         .wrap(Wrap { trim: false })
         .block(
             Block::default()
-                .title(input_title)
+                .title(input_title.as_str())
                 .borders(Borders::ALL)
                 .title_style(t.hint_line),
         );
@@ -412,11 +535,13 @@ fn draw_ui(frame: &mut Frame<'_>, app: &AppState) {
     }
 }
 
-fn split_layout(area: Rect) -> [Rect; 4] {
+fn split_layout(area: Rect, input_lines: u16) -> [Rect; 4] {
+    // +2 for top/bottom borders; clamp between 3 (1 line) and 8 (6 lines)
+    let input_height = (input_lines.saturating_add(2)).clamp(3, 8);
     let [top_pane, status_pane, input_pane] = Layout::vertical([
         Constraint::Min(5),
         Constraint::Length(5),
-        Constraint::Length(3),
+        Constraint::Length(input_height),
     ])
     .areas(area);
     let [conversation_pane, worker_pane] =
@@ -439,6 +564,7 @@ fn centered_rect(area: Rect, width_percent: u16, height: u16) -> Rect {
 struct RuntimeState {
     in_flight: bool,
     session_id: Option<String>,
+    abort_handle: Option<tokio::task::AbortHandle>,
 }
 
 enum RuntimeDeps {
@@ -484,6 +610,12 @@ struct AppState {
     pending_worker_count: usize,
     should_quit: bool,
     theme: Theme,
+    /// Currently executing tool name, if any.
+    active_tool: Option<String>,
+    /// Whether the agent is in-flight (thinking or running a tool).
+    in_flight: bool,
+    /// Reference point for spinner animation.
+    spin_start: Instant,
 }
 
 impl Default for AppState {
@@ -510,6 +642,9 @@ impl AppState {
             pending_worker_count: 0,
             should_quit: false,
             theme,
+            active_tool: None,
+            in_flight: false,
+            spin_start: Instant::now(),
         }
     }
 }
@@ -523,7 +658,14 @@ enum AppAction {
         decision: ToolApprovalAction,
     },
     StopSelectedTask(String),
+    /// Esc pressed: abort in-flight request if any, otherwise quit.
+    Abort,
     Quit,
+    // ── Built-in TUI commands (/help /clear /reset /compact) ──────────────
+    ShowHelp,
+    ClearConversation,
+    ResetSession,
+    Compact,
 }
 
 #[derive(Clone, Debug)]
@@ -729,7 +871,7 @@ impl AppState {
         match key.code {
             KeyCode::Esc => {
                 self.ime_preedit = None;
-                AppAction::Quit
+                AppAction::Abort
             }
             KeyCode::Char('q') if self.input.is_empty() => AppAction::Quit,
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -817,6 +959,23 @@ impl AppState {
         }
         if matches!(normalized.as_str(), "q" | "quit" | "exit") {
             return AppAction::Quit;
+        }
+        // ── Built-in slash commands (intercepted client-side) ─────────────
+        if normalized.starts_with('/') {
+            let cmd = normalized.splitn(2, char::is_whitespace).next().unwrap_or("");
+            self.input.clear();
+            return match cmd {
+                "/help" => AppAction::ShowHelp,
+                "/clear" => AppAction::ClearConversation,
+                "/reset" => AppAction::ResetSession,
+                "/compact" => AppAction::Compact,
+                _ => {
+                    self.push_info_status(format!(
+                        "unknown command: {cmd}  (try /help)"
+                    ));
+                    AppAction::None
+                }
+            };
         }
         self.push_history(raw_input.clone());
 
@@ -936,8 +1095,36 @@ impl AppState {
         }
     }
 
+    fn show_help(&mut self) {
+        let help = "\
+/help     — 顯示此說明
+/clear    — 清除對話顯示（session 保留）
+/reset    — 清除對話並開始新 session
+/compact  — 請 LLM 壓縮摘要目前對話
+
+快捷鍵:
+  Enter          傳送訊息
+  Shift+Enter    輸入換行
+  Esc            取消進行中請求 / 退出
+  Ctrl+C         強制退出
+  PgUp/PgDn      捲動對話
+  Ctrl+V         貼上剪貼簿圖片";
+        self.conversation
+            .push(ConversationLine::Assistant(help.to_string()));
+        self.conversation_scroll = u16::MAX;
+    }
+
+    fn clear_conversation(&mut self) {
+        self.conversation.clear();
+        self.active_assistant_idx = None;
+        self.conversation_scroll = 0;
+        self.push_info_status("conversation cleared".to_string());
+    }
+
     fn close_active_assistant(&mut self) {
         self.active_assistant_idx = None;
+        self.in_flight = false;
+        self.active_tool = None;
         // Snapshot how many workers are still running when the turn ends.
         self.pending_worker_count = self.running_worker_count();
     }
@@ -1055,13 +1242,13 @@ impl AppState {
     }
 
     fn push_tool_start(&mut self, name: String, args: Value) {
-        self.push_info_status(format!(
-            "[tool:start] {name} ({})",
-            summarize_tool_args(&args)
-        ));
+        let summary = summarize_tool_args(&args);
+        self.active_tool = Some(format!("{name}({summary})"));
+        self.push_info_status(format!("[tool:start] {name} ({summary})"));
     }
 
     fn push_tool_done(&mut self, name: String, success: bool) {
+        self.active_tool = None;
         let marker = if success { "[ok]" } else { "[fail]" };
         self.push_info_status(format!("[tool:done] {name} {marker}"));
     }
@@ -1535,6 +1722,7 @@ fn drain_ui_events(
             UiEvent::AssistantDelta(delta) => app.apply_delta(&delta),
             UiEvent::AssistantDone => {
                 runtime.in_flight = false;
+                runtime.abort_handle = None;
                 app.close_active_assistant();
             }
             UiEvent::ToolStart { name, args } => app.push_tool_start(name, args),
@@ -1556,6 +1744,7 @@ fn drain_ui_events(
             } => app.push_worker_status_with_details(task_id, status, summary, timestamp),
             UiEvent::Error(message) => {
                 runtime.in_flight = false;
+                runtime.abort_handle = None;
                 app.push_error_status(message);
             }
             UiEvent::SessionReady(sid) => {
@@ -1584,7 +1773,8 @@ fn spawn_agent_turn(
     images: Vec<ImageSource>,
     ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
     always_allowed_tools: Arc<Mutex<HashSet<String>>>,
-) {
+    no_confirm: bool,
+) -> tokio::task::AbortHandle {
     tokio::spawn(async move {
         let Some(provider) = bootstrap_state.provider.clone() else {
             let _ = ui_tx.send(UiEvent::Error("provider unavailable".to_string()));
@@ -1620,10 +1810,11 @@ fn spawn_agent_turn(
                     name: name.clone(),
                     args: args.clone(),
                 });
-                let is_always_allowed = always_allowed_tools
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .contains(&name);
+                let is_always_allowed = no_confirm
+                    || always_allowed_tools
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .contains(&name);
                 if !is_always_allowed {
                     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
                     if tx
@@ -1725,7 +1916,8 @@ fn spawn_agent_turn(
                 let _ = ui_tx.send(UiEvent::Error(rendered));
             }
         }
-    });
+    })
+    .abort_handle()
 }
 
 fn spawn_task_stop(
@@ -1795,7 +1987,7 @@ impl Drop for TerminalGuard {
 
 fn restore_terminal() -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
     Ok(())
 }
 
@@ -1827,7 +2019,7 @@ mod tests {
 
     #[test]
     fn splits_into_four_panes() {
-        let [conversation, worker, status, input] = split_layout(Rect::new(0, 0, 120, 40));
+        let [conversation, worker, status, input] = split_layout(Rect::new(0, 0, 120, 40), 1);
 
         assert_eq!(conversation.width + worker.width, 120);
         assert_eq!(status.height, 5);

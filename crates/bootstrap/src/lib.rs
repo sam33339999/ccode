@@ -33,6 +33,7 @@ pub mod exports {
     pub use ccode_domain::cron::{CronJob, CronJobId};
     pub use ccode_domain::llm::ImageSource;
     pub use ccode_domain::message::{Message, Role};
+    pub use ccode_domain::session::SessionId;
     pub use ccode_ports::{
         cron::CronRepository,
         provider::{LlmClient, LlmRequest},

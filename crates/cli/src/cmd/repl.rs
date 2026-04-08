@@ -40,7 +40,7 @@ fn detect_repl_mode() -> ReplMode {
 
 pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
     match detect_repl_mode() {
-        ReplMode::Tui => super::tui::run_ui().await,
+        ReplMode::Tui => super::tui::run_ui(None, false).await,
         ReplMode::Pipe => run_pipe_mode(args).await,
     }
 }

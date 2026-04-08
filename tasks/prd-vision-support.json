@@ -1,0 +1,399 @@
+{
+  "name": "Vision Support + REPL/TUI Consolidation",
+  "description": "Add image input capability across all five providers (openrouter/anthropic/openai/zhipu/llamacpp), introduce crates/image-process for resize/quantize pipeline, consolidate REPL into TUI with TTY auto-detection, and support image input in Telegram/Discord gateway.",
+  "branchName": "ralph/vision-support",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Config schema — image / vision / context_window 欄位",
+      "description": "As a developer, I want to declare image processing strategy and provider vision capability in config so that the pipeline knows how to process images and which providers support them.",
+      "acceptanceCriteria": [
+        "crates/config/src/schema.rs 新增 ImageConfig struct，包含 strategy: Option<ImageStrategy>（預設 Resize）和 max_dimension: Option<u32>（預設 2048）",
+        "ImageStrategy enum 定義 Resize / Quantize / None 三個 variant，serde rename_all = snake_case",
+        "Config struct 新增 pub image: ImageConfig，標注 #[serde(default)]",
+        "五個 provider config（OpenRouterConfig / AnthropicConfig / OpenAiConfig / ZhipuConfig / LlamaCppConfig）各新增 vision: Option<bool> 和 context_window: Option<usize>",
+        "config.example.toml 補上 [image] section 與各 provider 的 vision / context_window 欄位及中文註解",
+        "README.zh.md § 設定參考段落同步更新",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-002",
+      "title": "Domain — ContentBlock::Image variant",
+      "description": "As a developer, I want an Image content block in the LLM domain so that image data can flow through the request pipeline.",
+      "acceptanceCriteria": [
+        "crates/domain/src/llm.rs 的 ContentBlock enum 新增 Image { source: ImageSource } variant",
+        "ImageSource struct 包含 media_type: ImageMediaType 與 data: ImageData",
+        "ImageMediaType enum 定義 Jpeg / Png / Gif / Webp",
+        "ImageData enum 定義 Base64(String) / Url(String)",
+        "所有現有 match ContentBlock 的地方補上 Image arm，編譯零 warning",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-003",
+      "title": "Domain — Message attachments（session 持久化）",
+      "description": "As a developer, I want session messages to carry optional image attachments so that conversation history with images can be persisted and resumed.",
+      "acceptanceCriteria": [
+        "crates/domain/src/message.rs 的 Message struct 新增 attachments: Option<Vec<Attachment>>",
+        "Attachment struct 定義 media_type: String 與 data: AttachmentData",
+        "AttachmentData enum 定義 Base64(String) / Url(String)",
+        "attachments 欄位標注 #[serde(skip_serializing_if = \"Option::is_none\")]",
+        "舊 session JSON（無 attachments 欄位）仍可正常 deserialize，不 panic",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-004",
+      "title": "crates/image-process — 新 workspace crate",
+      "description": "As a developer, I want a dedicated image-process crate so that image decoding, resizing, and quantization logic is isolated and reusable by both CLI and gateway.",
+      "acceptanceCriteria": [
+        "crates/image-process/ 目錄建立，Cargo.toml 加入 workspace members，依賴：imagequant = \"4\", png = \"0.17\", image = { version = \"*\", features = [\"png\", \"jpeg\", \"webp\", \"gif\"] }",
+        "公開 API：pub fn process(bytes: &[u8], strategy: ImageStrategy, max_dimension: u32) -> Result<ProcessedImage, ImageProcessError>",
+        "ProcessedImage struct：pub data: Vec<u8>, pub media_type: &'static str (固定 \"image/png\"), pub original_size: usize, pub processed_size: usize",
+        "ImageStrategy 從 crates/config 引入（use ccode_config::schema::ImageStrategy）",
+        "--- Resize pipeline ---",
+        "Resize pipeline 步驟 1：image::load_from_memory(bytes) decode 任意格式",
+        "Resize pipeline 步驟 2：若 img.width() > max_dimension 或 img.height() > max_dimension，則 img.resize(max_dimension, max_dimension, image::imageops::FilterType::Triangle)（等比縮放，不裁切）",
+        "Resize pipeline 步驟 3：let mut buf = Vec::new(); img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)?; 回傳 buf",
+        "--- Quantize pipeline ---",
+        "Quantize pipeline 步驟 1：先執行 Resize pipeline 縮放（共用同一個 resize 邏輯）",
+        "Quantize pipeline 步驟 2：用 png::Decoder 重新 decode 已 resize 的 PNG bytes，取得 width、height、color_type、bit_depth、buf",
+        "Quantize pipeline 步驟 3：normalize 到 RGBA — match (color_type, bit_depth)：Rgba+Eight → 直接 chunks(4) map 成 imagequant::RGBA；Rgb+Eight → chunks(3) map，a=255；Grayscale+Eight → 每 byte v map 成 r=g=b=v, a=255；GrayscaleAlpha+Eight → chunks(2) map，r=g=b=c[0], a=c[1]；其他格式回傳 ImageProcessError::UnsupportedFormat",
+        "Quantize pipeline 步驟 4：let mut liq = imagequant::new(); liq.set_quality(0, 80)?;（quality 固定 80，不對外暴露）",
+        "Quantize pipeline 步驟 5：let mut image = liq.new_image(&rgba_pixels[..], width, height, 0.0)?; let mut result = liq.quantize(&mut image)?;",
+        "Quantize pipeline 步驟 6：result.set_dithering_level(1.0)?; let (palette, pixels_out) = result.remapped(&mut image)?;",
+        "Quantize pipeline 步驟 7：建立 PNG encoder：png::Encoder::new(writer, width as u32, height as u32)，set_color(png::ColorType::Indexed)，set_depth(png::BitDepth::Eight)，set_compression(png::Compression::Best)",
+        "Quantize pipeline 步驟 8：從 palette 建立 PLTE（每個 color 取 r, g, b）與 tRNS（每個 color 取 a）；只有當 palette 中存在 a != 255 的 color 時才呼叫 encoder.set_trns(trns)，否則不寫 tRNS chunk",
+        "Quantize pipeline 步驟 9：encoder.set_palette(plte); let mut writer = encoder.write_header()?; writer.write_image_data(&pixels_out)?; 回傳 PNG bytes",
+        "--- None pipeline ---",
+        "None pipeline：原始 bytes 原封不動回傳，original_size == processed_size",
+        "--- 共用規則 ---",
+        "支援輸入格式：PNG / JPEG / WebP / GIF（由 image crate decode）",
+        "unit test：對一張 4x4 純色 PNG bytes 跑三種 strategy，驗證輸出均可被 png::Decoder 正確 decode 且 width/height 正確",
+        "unit test：對超過 max_dimension 的輸入圖，Resize 與 Quantize strategy 輸出的寬高均 <= max_dimension",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Quantize pipeline 的核心算法（步驟 2-9）基於 imagequant + png crate 的標準用法，與 TinyPNG 相同原理：palette quantization（256 色）+ Floyd-Steinberg dithering + DEFLATE Best 壓縮。不需要額外參考其他專案。",
+      "dependsOn": [
+        "US-001"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-005",
+      "title": "Ports — ProviderCapabilities + LlmClient::capabilities()",
+      "description": "As a developer, I want the LlmClient trait to expose provider capabilities so that the application layer can guard against sending images to unsupported providers.",
+      "acceptanceCriteria": [
+        "crates/ports/src/provider.rs 新增 ProviderCapabilities { vision: bool, context_window: Option<usize> }",
+        "LlmClient trait 新增 fn capabilities(&self) -> ProviderCapabilities",
+        "ProviderRouter（crates/provider/src/router.rs）實作 capabilities()，採 conservative merge：任一 provider vision = false 則整體回傳 false",
+        "所有現有 adapter（openrouter / anthropic / openai / zhipu / llamacpp）先實作此方法回傳 vision: false, context_window: None（後續 US-006~010 覆寫）",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-002"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-006",
+      "title": "Provider — OpenRouter adapter 視覺支援",
+      "description": "As a developer, I want the OpenRouter adapter to support vision so that images can be sent to OpenRouter vision-capable models.",
+      "acceptanceCriteria": [
+        "OpenRouterAdapter 建構時從 OpenRouterConfig.vision 讀值並存起來",
+        "capabilities() 正確回傳 config 宣告的 vision 與 context_window",
+        "request 序列化遇到 ContentBlock::Image { Base64 } → { type: \"image_url\", image_url: { url: \"data:<mime>;base64,<data>\" } }",
+        "request 序列化遇到 ContentBlock::Image { Url } → { type: \"image_url\", image_url: { url: \"<url>\" } }",
+        "vision = false 時 adapter 行為與現在完全相同",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-007",
+      "title": "Provider — Anthropic adapter 視覺支援",
+      "description": "As a developer, I want the Anthropic adapter to support vision using Anthropic's native image format.",
+      "acceptanceCriteria": [
+        "AnthropicAdapter 建構時從 AnthropicConfig.vision 讀值並存起來",
+        "capabilities() 正確回傳 config 宣告的 vision 與 context_window",
+        "request 序列化遇到 ContentBlock::Image { Base64 } → { type: \"image\", source: { type: \"base64\", media_type: \"<mime>\", data: \"<data>\" } }",
+        "request 序列化遇到 ContentBlock::Image { Url } → 回傳 LlmError::InvalidResponse(\"Anthropic does not support image URL source\")",
+        "vision = false 時 adapter 行為與現在完全相同",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-008",
+      "title": "Provider — OpenAI adapter 視覺支援",
+      "description": "As a developer, I want the OpenAI adapter to support vision.",
+      "acceptanceCriteria": [
+        "OpenAiAdapter 建構時從 OpenAiConfig.vision 讀值並存起來",
+        "capabilities() 正確回傳 config 宣告的 vision 與 context_window",
+        "request 序列化格式與 OpenRouter 相同（image_url，支援 base64 data URL 與直接 URL）",
+        "vision = false 時 adapter 行為與現在完全相同",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-009",
+      "title": "Provider — Zhipu adapter 視覺支援",
+      "description": "As a developer, I want the Zhipu adapter to support vision.",
+      "acceptanceCriteria": [
+        "ZhipuAdapter 建構時從 ZhipuConfig.vision 讀值並存起來",
+        "capabilities() 正確回傳 config 宣告的 vision 與 context_window",
+        "查閱智谱 AI API 文件確認圖片欄位格式，實作對應 request 序列化",
+        "若 Zhipu 不支援圖片 URL，Url variant 回傳 LlmError::InvalidResponse 並附說明",
+        "vision = false 時 adapter 行為與現在完全相同",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "實作前需確認智谱 API 最新文件的圖片欄位格式",
+      "dependsOn": [
+        "US-001",
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-010",
+      "title": "Provider — LlamaCpp adapter 視覺支援",
+      "description": "As a developer, I want the LlamaCpp adapter to support vision for local multimodal models.",
+      "acceptanceCriteria": [
+        "LlamaCppAdapter 建構時從 LlamaCppConfig.vision 讀值並存起來",
+        "capabilities() 正確回傳 config 宣告的 vision 與 context_window",
+        "request 序列化使用 OpenAI-compat 格式（image_url with base64 data URL）",
+        "vision = false（預設）時 adapter 行為與現在完全相同",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-005"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-011",
+      "title": "Application — AgentRunCommand 圖片支援 + guard",
+      "description": "As a developer, I want AgentRunCommand to accept image attachments and guard against non-vision providers so that users get a clear error instead of a confusing API failure.",
+      "acceptanceCriteria": [
+        "run_with_metrics signature 新增 images: Vec<ImageSource> 參數（空 vec = 無圖片，現有呼叫方傳空 vec 維持向後相容）",
+        "有圖片且 !provider.capabilities().vision 時回傳 ApplicationError::VisionNotSupported(provider_name)，不送出 API 請求",
+        "有圖片時第一則 user message 組成 multi-block：[Text { text }, Image { source }, ...]",
+        "ContentBlock::Image 的 context token 估算使用固定值：Anthropic provider 用 1600，其他用 1000",
+        "VisionNotSupported 在 crates/cli/src/cmd/output.rs 有對應的 friendly error 訊息（中英文均可）",
+        "無圖片的既有呼叫路徑行為完全不變",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-002",
+        "US-003",
+        "US-005",
+        "US-006",
+        "US-007",
+        "US-008",
+        "US-009",
+        "US-010"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-012",
+      "title": "CLI 整合 — 廢棄 REPL，TTY 自動偵測",
+      "description": "As a user, I want `ccode repl` to automatically enter TUI when interactive and fall back to pipe mode when piped, without needing two separate commands.",
+      "acceptanceCriteria": [
+        "crates/cli/src/cmd/repl.rs 實作 TTY 偵測：std::io::stdin().is_terminal() == true 時呼叫 TUI 進入點",
+        "std::io::stdin().is_terminal() == false 時：讀 stdin 逐行執行 AgentRunCommand，結果印 stdout，無 ANSI escape codes",
+        "TUI run() 函式抽出為可被 repl.rs 呼叫的公開函式",
+        "rustyline 相關程式碼（DefaultEditor、readline loop）從 repl.rs 移除",
+        "rustyline 從 crates/cli/Cargo.toml 移除（確認無其他使用方）",
+        "ccode repl --help 說明更新，提及 TTY 自動偵測行為",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-011"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-013",
+      "title": "TUI — 剪貼簿圖片貼上（Ctrl+V）",
+      "description": "As a user, I want to press Ctrl+V in the TUI to paste an image from clipboard so that I can quickly share screenshots with the agent.",
+      "acceptanceCriteria": [
+        "crates/cli/Cargo.toml 新增 arboard = { version = \"3\", features = [\"wayland-data-control\"] } 和 tempfile",
+        "實作 clipboard_paste.rs：優先 cb.get().file_list()（Finder 複製），失敗則 cb.get_image()（RGBA pixels）",
+        "取得圖片 bytes 後透過 image-process crate 依 config.image.strategy 處理",
+        "處理後寫入 temp_dir()/ccode-clipboard-XXXX.png（使用 tempfile crate）",
+        "TUI 輸入框插入 @image:/tmp/ccode-clipboard-xxxx.png placeholder",
+        "arboard 失敗時（非圖片內容、平台不支援等）顯示 inline error 訊息，不 panic",
+        "送出訊息時，parser 把所有 @image:<path> 讀檔轉成 ImageSource::Base64 傳入 run_with_metrics",
+        "provider vision = false 時由 US-011 guard 攔截並顯示 friendly error",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "參考 Codex codex-rs/tui/src/clipboard_paste.rs 實作方式",
+      "dependsOn": [
+        "US-004",
+        "US-011",
+        "US-012"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-014",
+      "title": "TUI — 檔案路徑圖片附件（@path）",
+      "description": "As a user, I want to type @/path/to/image.png in the TUI input box to attach a local image file.",
+      "acceptanceCriteria": [
+        "送出前 parse 輸入字串，以空白或行尾作為分隔，擷取所有 @<path> token",
+        "副檔名為 png / jpg / jpeg / gif / webp 時讀檔，透過 image-process crate 依 config.image.strategy 處理",
+        "路徑不存在時顯示 inline warning 並仍送出純文字（不中斷）",
+        "副檔名不支援時顯示 inline warning 並仍送出純文字（不中斷）",
+        "Finder 拖放到 terminal 貼出的路徑字串符合 @<path> 格式，無需額外處理",
+        "送出後 @image:... placeholder 從輸入框清除",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-004",
+        "US-011",
+        "US-012"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-015",
+      "title": "Gateway — Telegram 圖片接收",
+      "description": "As a user, I want to send an image to the Telegram bot so that the agent can analyze it.",
+      "acceptanceCriteria": [
+        "telegram.rs / telegram_polling.rs 偵測 message.photo（Telegram 壓縮圖）和 message.document（原始檔案）",
+        "呼叫 getFile API 取得 file_path，再以 https://api.telegram.org/file/bot<token>/<file_path> 下載圖片 bytes",
+        "下載 bytes 透過 image-process crate 依 gateway 自身 config.image.strategy 處理",
+        "agent_bridge::run_agent signature 新增 images: Vec<ImageSource> 參數",
+        "provider vision = false 時 bot 回覆「此 provider 不支援圖片輸入」給用戶，不 panic",
+        "純文字訊息（無 photo / document）行為完全不變",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-004",
+        "US-011"
+      ],
+      "completionNotes": "Completed by agent"
+    },
+    {
+      "id": "US-016",
+      "title": "Gateway — Discord 圖片接收",
+      "description": "As a user, I want to attach an image to a Discord slash command so that the agent can analyze it.",
+      "acceptanceCriteria": [
+        "discord.rs 解析 interaction.data.resolved.attachments，取得 attachment 的 url 與 content_type",
+        "以 reqwest 下載 attachment URL 的圖片 bytes",
+        "下載 bytes 透過 image-process crate 依 gateway 自身 config.image.strategy 處理",
+        "slash command 新增選填的 attachment option（Discord type = ATTACHMENT，option name = image）",
+        "provider vision = false 時 Discord interaction 回覆明確錯誤訊息",
+        "無 attachment 的純文字指令行為完全不變",
+        "cargo fmt --check passes",
+        "cargo clippy --workspace -- -D warnings passes",
+        "cargo test --workspace passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Discord slash command 的 attachment option 需手動在 Developer Portal 更新",
+      "dependsOn": [
+        "US-004",
+        "US-011"
+      ],
+      "completionNotes": "Completed by agent"
+    }
+  ],
+  "metadata": {
+    "updatedAt": "2026-04-08T01:19:42.766Z"
+  }
+}

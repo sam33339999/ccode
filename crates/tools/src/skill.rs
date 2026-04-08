@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use ccode_ports::tool::{ToolContext, ToolPort};
 use ccode_ports::PortError;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const MAX_SCAN_DEPTH: usize = 4;
 const MAX_SCAN_DIRS: usize = 2000;
@@ -141,7 +141,10 @@ fn scan_recursive(dir: &Path, depth: usize, dir_count: &mut usize, out: &mut Vec
             continue;
         }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if matches!(name.as_ref(), ".git" | "node_modules" | "target" | ".tox" | ".venv") {
+        if matches!(
+            name.as_ref(),
+            ".git" | "node_modules" | "target" | ".tox" | ".venv"
+        ) {
             continue;
         }
         scan_recursive(&path, depth + 1, dir_count, out);
@@ -159,8 +162,8 @@ fn parse_skill_md(path: &Path) -> anyhow::Result<SkillEntry> {
     let (yaml, _body) = extract_frontmatter(&content)
         .ok_or_else(|| anyhow::anyhow!("missing YAML frontmatter (--- delimiters)"))?;
 
-    let fm: SkillFrontmatter = serde_yaml::from_str(yaml)
-        .map_err(|e| anyhow::anyhow!("YAML parse error: {e}"))?;
+    let fm: SkillFrontmatter =
+        serde_yaml::from_str(yaml).map_err(|e| anyhow::anyhow!("YAML parse error: {e}"))?;
 
     let description = fm
         .description
@@ -184,7 +187,9 @@ fn parse_skill_md(path: &Path) -> anyhow::Result<SkillEntry> {
 fn extract_frontmatter(content: &str) -> Option<(&str, &str)> {
     let s = content.trim_start();
     let rest = s.strip_prefix("---")?;
-    let rest = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n"))?;
+    let rest = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))?;
     let close = rest.find("\n---")?;
     let yaml = &rest[..close];
     let after = &rest[close + 4..]; // skip \n---
@@ -346,7 +351,12 @@ mod tests {
     fn discover_skills_finds_valid_skill() {
         let tmp = TempDir::new().unwrap();
         let skills_dir = tmp.path().join(".ccode").join("skills");
-        write_skill(&skills_dir, "my-skill-unique-abc123", "Does something useful.", "# Instructions");
+        write_skill(
+            &skills_dir,
+            "my-skill-unique-abc123",
+            "Does something useful.",
+            "# Instructions",
+        );
 
         let found = discover_skills(tmp.path());
         let skill = found.iter().find(|s| s.name == "my-skill-unique-abc123");
@@ -380,12 +390,29 @@ mod tests {
         let project_skills = tmp.path().join(".ccode").join("skills");
         let agents_skills = tmp.path().join(".agents").join("skills");
 
-        write_skill(&project_skills, "shared-prio-test", "Project version.", "Project body");
-        write_skill(&agents_skills, "shared-prio-test", "Agents version.", "Agents body");
+        write_skill(
+            &project_skills,
+            "shared-prio-test",
+            "Project version.",
+            "Project body",
+        );
+        write_skill(
+            &agents_skills,
+            "shared-prio-test",
+            "Agents version.",
+            "Agents body",
+        );
 
         let found = discover_skills(tmp.path());
-        let matches: Vec<_> = found.iter().filter(|s| s.name == "shared-prio-test").collect();
-        assert_eq!(matches.len(), 1, "should only appear once after deduplication");
+        let matches: Vec<_> = found
+            .iter()
+            .filter(|s| s.name == "shared-prio-test")
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "should only appear once after deduplication"
+        );
         assert_eq!(matches[0].description, "Project version.");
     }
 
@@ -416,8 +443,7 @@ mod tests {
 
     #[test]
     fn augment_with_skill_catalog_returns_persona_when_no_catalog() {
-        let result =
-            augment_with_skill_catalog(Some("Be helpful.".to_string()), &None);
+        let result = augment_with_skill_catalog(Some("Be helpful.".to_string()), &None);
         assert_eq!(result.unwrap(), "Be helpful.");
     }
 }

@@ -287,22 +287,20 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                     if runtime.in_flight {
                         app.push_info_status("request already in progress".to_string());
                     } else if let RuntimeDeps::Ready { bootstrap_state } = &runtime_deps {
-                        match ccode_bootstrap::load_images_from_placeholders(prompt.as_str()) {
-                            Ok(images) => {
-                                runtime.in_flight = true;
-                                spawn_agent_turn(
-                                    Arc::clone(bootstrap_state),
-                                    runtime.session_id.clone(),
-                                    prompt,
-                                    images,
-                                    ui_tx.clone(),
-                                    Arc::clone(&always_allowed_tools),
-                                );
-                            }
-                            Err(err) => {
-                                app.push_error_status(format!("image placeholder error: {err}"));
-                            }
+                        let parsed = ccode_bootstrap::parse_images_from_input(prompt.as_str());
+                        for warning in &parsed.warnings {
+                            app.push_info_status(format!("[warn] {warning}"));
                         }
+                        app.replace_last_user_message(parsed.prompt.clone());
+                        runtime.in_flight = true;
+                        spawn_agent_turn(
+                            Arc::clone(bootstrap_state),
+                            runtime.session_id.clone(),
+                            parsed.prompt,
+                            parsed.images,
+                            ui_tx.clone(),
+                            Arc::clone(&always_allowed_tools),
+                        );
                     } else {
                         app.push_error_status("provider unavailable".to_string());
                     }
@@ -829,6 +827,13 @@ impl AppState {
         self.clear_history_navigation();
         self.ime_preedit = None;
         AppAction::Submit(raw_input)
+    }
+
+    fn replace_last_user_message(&mut self, text: String) {
+        let Some(ConversationLine::User(last)) = self.conversation.last_mut() else {
+            return;
+        };
+        *last = text;
     }
 
     fn handle_ctrl_v_with<F>(&mut self, paste_fn: F) -> AppAction
@@ -1935,6 +1940,20 @@ mod tests {
         assert_eq!(app.input.as_str(), "first");
         let _ = app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.input.as_str(), "second");
+    }
+
+    #[test]
+    fn replace_last_user_message_updates_latest_submitted_line() {
+        let mut app = AppState::default();
+        app.input.set_text("look @/tmp/x.png".to_string());
+        assert!(matches!(app.submit_input(), AppAction::Submit(_)));
+
+        app.replace_last_user_message("look".to_string());
+
+        match app.conversation.last() {
+            Some(ConversationLine::User(text)) => assert_eq!(text, "look"),
+            other => panic!("expected latest user line, got {other:?}"),
+        }
     }
 
     #[test]

@@ -3,6 +3,7 @@ use base64::Engine;
 use ccode_config::schema::{Config, ImageStrategy};
 use ccode_domain::llm::{ImageData, ImageMediaType, ImageSource};
 use std::borrow::Cow;
+use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,41 @@ pub enum ImageInputError {
     Tempfile(#[source] std::io::Error),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageAttachmentWarning {
+    PathNotFound { path: String },
+    UnsupportedExtension { path: String },
+    ReadFailed { path: String, reason: String },
+    ProcessFailed { path: String, reason: String },
+}
+
+impl fmt::Display for ImageAttachmentWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PathNotFound { path } => write!(f, "image path not found: {path}"),
+            Self::UnsupportedExtension { path } => {
+                write!(
+                    f,
+                    "unsupported image extension: {path} (supported: png/jpg/jpeg/gif/webp)"
+                )
+            }
+            Self::ReadFailed { path, reason } => {
+                write!(f, "failed to read image path {path}: {reason}")
+            }
+            Self::ProcessFailed { path, reason } => {
+                write!(f, "failed to process image {path}: {reason}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ParsedImageInput {
+    pub prompt: String,
+    pub images: Vec<ImageSource>,
+    pub warnings: Vec<ImageAttachmentWarning>,
+}
+
 pub fn load_images_from_placeholders(input: &str) -> Result<Vec<ImageSource>, ImageInputError> {
     collect_image_placeholder_paths(input)
         .into_iter()
@@ -52,6 +88,129 @@ pub fn load_images_from_placeholders(input: &str) -> Result<Vec<ImageSource>, Im
             })
         })
         .collect()
+}
+
+pub fn parse_images_from_input(input: &str) -> ParsedImageInput {
+    let (strategy, max_dimension) = image_processing_config();
+    let mut prompt = String::with_capacity(input.len());
+    let mut images = Vec::new();
+    let mut warnings = Vec::new();
+    let mut token = String::new();
+
+    for ch in input.chars() {
+        if ch.is_whitespace() {
+            if !token.is_empty() {
+                collect_from_token(
+                    token.as_str(),
+                    strategy.clone(),
+                    max_dimension,
+                    &mut prompt,
+                    &mut images,
+                    &mut warnings,
+                );
+                token.clear();
+            }
+            prompt.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+
+    if !token.is_empty() {
+        collect_from_token(
+            token.as_str(),
+            strategy,
+            max_dimension,
+            &mut prompt,
+            &mut images,
+            &mut warnings,
+        );
+    }
+
+    ParsedImageInput {
+        prompt,
+        images,
+        warnings,
+    }
+}
+
+fn collect_from_token(
+    token: &str,
+    strategy: ImageStrategy,
+    max_dimension: u32,
+    prompt: &mut String,
+    images: &mut Vec<ImageSource>,
+    warnings: &mut Vec<ImageAttachmentWarning>,
+) {
+    let Some(path_str) = image_path_from_token(token) else {
+        prompt.push_str(token);
+        return;
+    };
+
+    let path = Path::new(path_str);
+    if !path.exists() {
+        warnings.push(ImageAttachmentWarning::PathNotFound {
+            path: path.display().to_string(),
+        });
+        return;
+    }
+
+    match process_image_path_with_strategy(path, strategy, max_dimension) {
+        Ok(image) => images.push(image),
+        Err(ImageInputError::UnsupportedExtension { path }) => {
+            warnings.push(ImageAttachmentWarning::UnsupportedExtension { path });
+        }
+        Err(ImageInputError::ReadFailed { path, source }) => {
+            warnings.push(ImageAttachmentWarning::ReadFailed {
+                path,
+                reason: source.to_string(),
+            });
+        }
+        Err(ImageInputError::Process(source)) => {
+            warnings.push(ImageAttachmentWarning::ProcessFailed {
+                path: path.display().to_string(),
+                reason: source.to_string(),
+            });
+        }
+        Err(other) => {
+            warnings.push(ImageAttachmentWarning::ProcessFailed {
+                path: path.display().to_string(),
+                reason: other.to_string(),
+            });
+        }
+    }
+}
+
+fn image_path_from_token(token: &str) -> Option<&str> {
+    if let Some(path) = token.strip_prefix(IMAGE_PLACEHOLDER_PREFIX) {
+        return (!path.is_empty()).then_some(path);
+    }
+
+    let path = token.strip_prefix('@')?;
+    (!path.is_empty()).then_some(path)
+}
+
+fn process_image_path_with_strategy(
+    path: &Path,
+    strategy: ImageStrategy,
+    max_dimension: u32,
+) -> Result<ImageSource, ImageInputError> {
+    let original_media_type = media_type_from_path(path)?;
+    let bytes = std::fs::read(path).map_err(|source| ImageInputError::ReadFailed {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let processed = ccode_image_process::process(bytes.as_slice(), strategy.clone(), max_dimension)
+        .map_err(ImageInputError::Process)?;
+    let media_type = match strategy {
+        ImageStrategy::None => original_media_type,
+        ImageStrategy::Resize | ImageStrategy::Quantize => ImageMediaType::Png,
+    };
+
+    Ok(ImageSource {
+        media_type,
+        data: ImageData::Base64(base64::engine::general_purpose::STANDARD.encode(processed.data)),
+    })
 }
 
 pub fn paste_image_from_clipboard_to_temp_file() -> Result<PathBuf, ImageInputError> {
@@ -205,7 +364,20 @@ fn is_supported_image_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ccode_config::schema::ImageStrategy;
+    use image::{ImageBuffer, Rgba};
+    use std::io::Cursor;
     use tempfile::TempDir;
+
+    fn make_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+        let img = ImageBuffer::from_pixel(width, height, Rgba(color));
+        let dynimg = image::DynamicImage::ImageRgba8(img);
+        let mut bytes = Vec::new();
+        dynimg
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .expect("encode png");
+        bytes
+    }
 
     #[test]
     fn parses_and_loads_all_placeholder_images() {
@@ -224,5 +396,60 @@ mod tests {
         assert_eq!(images.len(), 2);
         assert_eq!(images[0].media_type, ImageMediaType::Png);
         assert_eq!(images[1].media_type, ImageMediaType::Gif);
+    }
+
+    #[test]
+    fn parses_at_path_tokens_and_removes_from_text() {
+        let tmp = TempDir::new().expect("tempdir");
+        let png_path = tmp.path().join("x.png");
+        std::fs::write(&png_path, make_png(2, 2, [10, 20, 30, 255])).expect("write png");
+
+        let input = format!("hello @{} world", png_path.display());
+        let parsed = parse_images_from_input(input.as_str());
+        assert_eq!(parsed.warnings.len(), 0);
+        assert_eq!(parsed.images.len(), 1);
+        assert_eq!(parsed.prompt, "hello  world");
+    }
+
+    #[test]
+    fn warns_for_missing_path_but_keeps_text_flowing() {
+        let missing = "/definitely-not-found/ccode-missing.png";
+        let input = format!("describe @{} please", missing);
+        let parsed = parse_images_from_input(input.as_str());
+        assert_eq!(parsed.images.len(), 0);
+        assert_eq!(parsed.prompt, "describe  please");
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(matches!(
+            parsed.warnings[0],
+            ImageAttachmentWarning::PathNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn warns_for_unsupported_extension_but_keeps_text_flowing() {
+        let tmp = TempDir::new().expect("tempdir");
+        let txt_path = tmp.path().join("note.txt");
+        std::fs::write(&txt_path, b"hello").expect("write txt");
+
+        let input = format!("read @{}", txt_path.display());
+        let parsed = parse_images_from_input(input.as_str());
+        assert_eq!(parsed.images.len(), 0);
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(matches!(
+            parsed.warnings[0],
+            ImageAttachmentWarning::UnsupportedExtension { .. }
+        ));
+    }
+
+    #[test]
+    fn keeps_original_media_type_when_strategy_none() {
+        let tmp = TempDir::new().expect("tempdir");
+        let png_path = tmp.path().join("plain.png");
+        std::fs::write(&png_path, make_png(1, 1, [255, 0, 0, 255])).expect("write png");
+
+        let processed =
+            process_image_path_with_strategy(png_path.as_path(), ImageStrategy::None, 8)
+                .expect("process");
+        assert_eq!(processed.media_type, ImageMediaType::Png);
     }
 }

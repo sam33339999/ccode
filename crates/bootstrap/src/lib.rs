@@ -24,7 +24,8 @@ use std::sync::Arc;
 mod image_input;
 
 pub use image_input::{
-    ImageInputError, load_images_from_placeholders, paste_image_from_clipboard_to_temp_file,
+    ImageAttachmentWarning, ImageInputError, ParsedImageInput, load_images_from_placeholders,
+    parse_images_from_input, paste_image_from_clipboard_to_temp_file,
 };
 
 pub mod exports {

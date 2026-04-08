@@ -48,6 +48,8 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
     let session_for_errors = args.session.clone().unwrap_or_else(|| "new".to_string());
     let provider_name_for_tools = provider_name_for_errors.clone();
     let session_for_tools = session_for_errors.clone();
+    let images = ccode_bootstrap::load_images_from_placeholders(args.message.as_str())
+        .with_context(|| "failed to parse @image:<path> placeholders".to_string())?;
 
     let tool_ctx = state.tool_ctx();
     let tool_definitions = state.tool_registry.definitions();
@@ -156,7 +158,7 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
             args.session,
             system_prompt,
             args.message,
-            Vec::new(),
+            images,
             tool_definitions,
             &on_delta,
             &execute_tool,

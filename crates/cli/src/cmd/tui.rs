@@ -1,5 +1,6 @@
 use ccode_application::commands::agent_run::AgentRunCommand;
 use ccode_bootstrap::AppState as BootstrapState;
+use ccode_bootstrap::exports::ImageSource;
 use ccode_bootstrap::worker_monitor;
 use chrono::{DateTime, Local};
 use clap::Args;
@@ -23,8 +24,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::output::{
-    ErrorCategory, ToolConfirmationDecision, classify_error, classify_tool_risk,
-    error_category_label, summarize_tool_args, worker_status_label,
+    ErrorCategory, ErrorContext, ToolConfirmationDecision, classify_error, classify_tool_risk,
+    error_category_label, render_error_message, summarize_tool_args, worker_status_label,
 };
 
 // ── Color support detection ───────────────────────────────────────────────────
@@ -263,6 +264,7 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                     Arc::clone(bootstrap_state),
                     runtime.session_id.clone(),
                     follow_up,
+                    Vec::new(),
                     ui_tx.clone(),
                     Arc::clone(&always_allowed_tools),
                 );
@@ -285,14 +287,22 @@ async fn run_ui_loop() -> anyhow::Result<()> {
                     if runtime.in_flight {
                         app.push_info_status("request already in progress".to_string());
                     } else if let RuntimeDeps::Ready { bootstrap_state } = &runtime_deps {
-                        runtime.in_flight = true;
-                        spawn_agent_turn(
-                            Arc::clone(bootstrap_state),
-                            runtime.session_id.clone(),
-                            prompt,
-                            ui_tx.clone(),
-                            Arc::clone(&always_allowed_tools),
-                        );
+                        match ccode_bootstrap::load_images_from_placeholders(prompt.as_str()) {
+                            Ok(images) => {
+                                runtime.in_flight = true;
+                                spawn_agent_turn(
+                                    Arc::clone(bootstrap_state),
+                                    runtime.session_id.clone(),
+                                    prompt,
+                                    images,
+                                    ui_tx.clone(),
+                                    Arc::clone(&always_allowed_tools),
+                                );
+                            }
+                            Err(err) => {
+                                app.push_error_status(format!("image placeholder error: {err}"));
+                            }
+                        }
                     } else {
                         app.push_error_status("provider unavailable".to_string());
                     }
@@ -708,6 +718,12 @@ impl AppState {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return AppAction::Quit;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v') {
+            return self.handle_ctrl_v_with(|| {
+                ccode_bootstrap::paste_image_from_clipboard_to_temp_file()
+                    .map_err(|e| e.to_string())
+            });
+        }
         if self.tool_approval.is_some() {
             return self.handle_approval_key(key);
         }
@@ -813,6 +829,25 @@ impl AppState {
         self.clear_history_navigation();
         self.ime_preedit = None;
         AppAction::Submit(raw_input)
+    }
+
+    fn handle_ctrl_v_with<F>(&mut self, paste_fn: F) -> AppAction
+    where
+        F: FnOnce() -> Result<std::path::PathBuf, String>,
+    {
+        self.clear_preedit_state();
+        match paste_fn() {
+            Ok(path) => {
+                let placeholder = format!("@image:{} ", path.display());
+                self.input.insert_str(placeholder.as_str());
+                self.clear_history_navigation();
+                self.push_info_status(format!("pasted image: {}", path.display()));
+            }
+            Err(err) => {
+                self.push_error_status(format!("clipboard paste failed: {err}"));
+            }
+        }
+        AppAction::None
     }
 
     fn clear_preedit_state(&mut self) {
@@ -1541,6 +1576,7 @@ fn spawn_agent_turn(
     bootstrap_state: Arc<BootstrapState>,
     session_id: Option<String>,
     user_content: String,
+    images: Vec<ImageSource>,
     ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
     always_allowed_tools: Arc<Mutex<HashSet<String>>>,
 ) {
@@ -1549,6 +1585,8 @@ fn spawn_agent_turn(
             let _ = ui_tx.send(UiEvent::Error("provider unavailable".to_string()));
             return;
         };
+        let provider_name = provider.name().to_string();
+        let session_for_errors = session_id.clone().unwrap_or_else(|| "new".to_string());
         let cmd = AgentRunCommand::new(Arc::clone(&bootstrap_state.session_repo), provider)
             .with_context(bootstrap_state.context_policy.clone());
         let tool_registry = Arc::clone(&bootstrap_state.tool_registry);
@@ -1654,11 +1692,11 @@ fn spawn_agent_turn(
         };
 
         let result = cmd
-            .run(
+            .run_with_metrics(
                 session_id,
                 None,
                 user_content,
-                Vec::new(),
+                images,
                 tool_definitions,
                 &on_delta,
                 &execute_tool,
@@ -1666,13 +1704,20 @@ fn spawn_agent_turn(
             .await;
 
         match result {
-            Ok(sid) => {
+            Ok(outcome) => {
                 let _ = ui_tx.send(UiEvent::AssistantDone);
-                let _ = ui_tx.send(UiEvent::SessionReady(sid.to_string()));
+                let _ = ui_tx.send(UiEvent::SessionReady(outcome.session_id.to_string()));
             }
             Err(err) => {
                 let _ = ui_tx.send(UiEvent::AssistantDone);
-                let _ = ui_tx.send(UiEvent::Error(err.to_string()));
+                let rendered = render_error_message(
+                    &err.to_string(),
+                    &ErrorContext {
+                        session_id: session_for_errors,
+                        provider_name,
+                    },
+                );
+                let _ = ui_tx.send(UiEvent::Error(rendered));
             }
         }
     });
@@ -1772,6 +1817,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use ratatui::layout::Rect;
     use serde_json::json;
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1790,6 +1836,34 @@ mod tests {
         let action = app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
 
         assert!(matches!(action, AppAction::Quit));
+    }
+
+    #[test]
+    fn ctrl_v_inserts_image_placeholder_and_status() {
+        let mut app = AppState::default();
+        let action = app.handle_ctrl_v_with(|| Ok(PathBuf::from("/tmp/ccode-clipboard-123.png")));
+        assert!(matches!(action, AppAction::None));
+        assert_eq!(app.input.as_str(), "@image:/tmp/ccode-clipboard-123.png ");
+        let status = app.render_status_lines();
+        assert!(
+            status
+                .iter()
+                .any(|line| line.to_string().contains("pasted image"))
+        );
+    }
+
+    #[test]
+    fn ctrl_v_error_shows_inline_status_without_panic() {
+        let mut app = AppState::default();
+        let action = app.handle_ctrl_v_with(|| Err("non-image content".to_string()));
+        assert!(matches!(action, AppAction::None));
+        assert_eq!(app.input.as_str(), "");
+        let status = app.render_status_lines();
+        assert!(
+            status
+                .iter()
+                .any(|line| line.to_string().contains("clipboard paste failed"))
+        );
     }
 
     #[test]

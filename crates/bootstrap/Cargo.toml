@@ -13,9 +13,14 @@ ccode-mcp-runtime  = { path = "../mcp-runtime" }
 ccode-session      = { path = "../session" }
 ccode-tools        = { path = "../tools" }
 ccode-cron         = { path = "../cron" }
+ccode-image-process = { path = "../image-process" }
 thiserror           = { workspace = true }
 tracing             = { workspace = true }
 tokio               = { workspace = true, features = ["rt"] }
+arboard             = { version = "3", features = ["wayland-data-control"] }
+tempfile            = "3"
+image               = "0.25"
+base64              = "0.22"
 
 [dev-dependencies]
 serde      = { workspace = true }

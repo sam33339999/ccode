@@ -21,9 +21,16 @@ use ccode_tools::{
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod image_input;
+
+pub use image_input::{
+    ImageInputError, load_images_from_placeholders, paste_image_from_clipboard_to_temp_file,
+};
+
 pub mod exports {
     pub use ccode_cron::{next_run_ms, parse_natural_schedule};
     pub use ccode_domain::cron::{CronJob, CronJobId};
+    pub use ccode_domain::llm::ImageSource;
     pub use ccode_domain::message::{Message, Role};
     pub use ccode_ports::{
         cron::CronRepository,
@@ -115,7 +122,13 @@ pub fn wire_dev() -> AppState {
         session_repo: Arc::new(InMemorySessionRepo::new()),
         cron_repo: Arc::new(FileCronRepo::new(cron_dir).expect("cron dir")),
         provider: None,
-        tool_registry: Arc::new(build_tool_registry(cwd.clone(), None, None, Vec::new(), Vec::new())),
+        tool_registry: Arc::new(build_tool_registry(
+            cwd.clone(),
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        )),
         permission: Permission::default(),
         cwd,
         context_policy: ContextPolicy::default(),

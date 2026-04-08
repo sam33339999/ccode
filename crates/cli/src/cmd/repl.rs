@@ -69,6 +69,8 @@ async fn run_pipe_mode(args: ReplArgs) -> anyhow::Result<()> {
         if input.is_empty() {
             continue;
         }
+        let images = ccode_bootstrap::load_images_from_placeholders(input.as_str())
+            .with_context(|| "failed to parse @image:<path> placeholders".to_string())?;
 
         let response = Arc::new(Mutex::new(String::new()));
         let response_for_delta = Arc::clone(&response);
@@ -99,7 +101,7 @@ async fn run_pipe_mode(args: ReplArgs) -> anyhow::Result<()> {
                 session_id.clone(),
                 persona_once.take(),
                 input,
-                Vec::new(),
+                images,
                 tools.clone(),
                 &on_delta,
                 &execute_tool,

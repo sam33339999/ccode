@@ -188,14 +188,12 @@ fn terminal_supports_tui() -> bool {
 pub struct TuiArgs {}
 
 pub async fn run(_args: TuiArgs) -> anyhow::Result<()> {
+    run_ui().await
+}
+
+pub async fn run_ui() -> anyhow::Result<()> {
     if !terminal_supports_tui() {
-        eprintln!("[tui] terminal does not support raw mode — falling back to REPL");
-        return super::repl::run(super::repl::ReplArgs {
-            session: None,
-            persona: None,
-            no_confirm: false,
-        })
-        .await;
+        anyhow::bail!("[tui] terminal does not support raw mode");
     }
     run_ui_loop().await
 }

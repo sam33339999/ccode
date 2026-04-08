@@ -21,7 +21,7 @@ pub enum Commands {
     },
     /// Run a single agent turn
     Agent(agent::AgentArgs),
-    /// Start an interactive chat session (REPL)
+    /// Start chat mode with auto-detection: TTY enters TUI, piped stdin runs line-by-line mode
     Repl(repl::ReplArgs),
     /// Start the full-screen terminal UI (TUI)
     Tui(tui::TuiArgs),

@@ -2,9 +2,12 @@ use anyhow::Error as AnyError;
 use std::io::Write;
 
 // ANSI color codes for terminal output
+#[allow(dead_code)]
 pub const GRAY: &str = "\x1b[90m";
 /// Warm amber — used for AI response text
+#[allow(dead_code)]
 pub const AI_RESPONSE: &str = "\x1b[38;5;222m";
+#[allow(dead_code)]
 pub const RESET: &str = "\x1b[0m";
 use ccode_application::commands::agent_run::estimate_tokens_from_chars;
 use ccode_application::error::AppError;
@@ -181,11 +184,13 @@ impl StreamFormatter {
 
 /// Animated thinking indicator shown while waiting for the first response token.
 /// Renders a braille spinner with elapsed time on stderr, erases itself when stopped.
+#[allow(dead_code)]
 pub struct ThinkingSpinner {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+#[allow(dead_code)]
 impl ThinkingSpinner {
     pub fn start_with(stop: Arc<AtomicBool>) -> Self {
         let stop_clone = stop.clone();

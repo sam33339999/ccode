@@ -361,17 +361,11 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                     Ok(s) => s,
                     Err(e) => format!("{{\"error\": \"{}\"}}", e.replace('"', "\\\"")),
                 };
-                // Truncate oversized tool results before adding to context
-                let result_content = if result_content.len() > self.context.tool_result_max_chars {
-                    format!(
-                        "{}…[truncated: {} chars total, showing first {}]",
-                        &result_content[..self.context.tool_result_max_chars],
-                        result_content.len(),
-                        self.context.tool_result_max_chars,
-                    )
-                } else {
-                    result_content
-                };
+                // Truncate oversized tool results before adding to context.
+                // The limit is in characters, while Rust string slicing is by bytes.
+                // Compute a valid UTF-8 boundary to avoid panics on multi-byte chars.
+                let result_content =
+                    truncate_with_char_limit(result_content, self.context.tool_result_max_chars);
 
                 let ts2 = now_ms();
                 let result_msg = Message::new_tool_result(
@@ -567,6 +561,29 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn truncate_with_char_limit(content: String, max_chars: usize) -> String {
+    let cutoff = byte_index_after_n_chars(&content, max_chars);
+    if cutoff == content.len() {
+        return content;
+    }
+
+    let total_chars = content.chars().count();
+    format!(
+        "{}…[truncated: {} chars total, showing first {}]",
+        &content[..cutoff],
+        total_chars,
+        max_chars,
+    )
+}
+
+fn byte_index_after_n_chars(content: &str, max_chars: usize) -> usize {
+    content
+        .char_indices()
+        .nth(max_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(content.len())
 }
 
 pub fn estimate_tokens_from_chars(chars: usize) -> usize {
@@ -914,6 +931,25 @@ mod tests {
         assert_eq!(estimate_image_context_tokens("anthropic"), 1600);
         assert_eq!(estimate_image_context_tokens("Anthropic"), 1600);
         assert_eq!(estimate_image_context_tokens("openrouter"), 1000);
+    }
+
+    #[test]
+    fn byte_index_after_n_chars_respects_utf8_boundaries() {
+        let input = "ab回c";
+        assert_eq!(byte_index_after_n_chars(input, 0), 0);
+        assert_eq!(byte_index_after_n_chars(input, 1), 1);
+        assert_eq!(byte_index_after_n_chars(input, 2), 2);
+        assert_eq!(byte_index_after_n_chars(input, 3), 5);
+        assert_eq!(byte_index_after_n_chars(input, 4), input.len());
+    }
+
+    #[test]
+    fn truncate_with_char_limit_truncates_without_panicking_on_multibyte_chars() {
+        let input = format!("{}{}", "a".repeat(40_000), "回");
+        let output = truncate_with_char_limit(input, 40_000);
+        assert!(output.contains("[truncated: 40001 chars total, showing first 40000]"));
+        assert!(!output.contains('回'));
+        assert!(output.ends_with("showing first 40000]"));
     }
 
     #[tokio::test]

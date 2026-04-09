@@ -50,3 +50,4 @@ async-stream       = "0.3"
 tokio-stream       = "0.1"
 chrono             = { version = "0.4", features = ["serde"] }
 cron               = "0.12"
+ulid               = "1"

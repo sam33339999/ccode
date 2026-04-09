@@ -14,5 +14,6 @@ serde_json    = { workspace = true }
 serde         = { workspace = true }
 tracing       = { workspace = true }
 tokio         = { workspace = true }
+ulid          = { workspace = true }
 
 [dev-dependencies]

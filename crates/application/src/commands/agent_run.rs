@@ -215,7 +215,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                     .await?
                     .unwrap_or_else(|| Session::new(id.clone(), now))
             }
-            None => Session::new(format!("sess-{now}"), now),
+            None => Session::new(new_session_id(), now),
         };
 
         // Prepend system prompt only when starting a fresh session
@@ -416,7 +416,7 @@ impl<R: SessionRepository> AgentRunCommand<R> {
                     .await?
                     .unwrap_or_else(|| Session::new(id.clone(), now))
             }
-            None => Session::new(format!("sess-{now}"), now),
+            None => Session::new(new_session_id(), now),
         };
 
         let msg_id = format!("msg-{now}-u");
@@ -561,6 +561,11 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Generate a unique, time-sortable session ID using ULID.
+fn new_session_id() -> String {
+    ulid::Ulid::new().to_string()
 }
 
 fn truncate_with_char_limit(content: String, max_chars: usize) -> String {

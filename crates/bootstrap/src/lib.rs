@@ -14,7 +14,8 @@ use ccode_tools::{
     mcp::{McpServerLaunch, discover_mcp_tools},
     shell::ShellTool,
     skill::{ActivateSkillTool, SkillEntry, build_skill_catalog, discover_skills},
-    spawn_agent::SpawnAgentTool,
+    get_agent_result::GetAgentResultTool,
+    spawn_agent::{SpawnAgentTool, new_agent_task_store},
     task_stop::TaskStopTool,
     web::{BrowserTool, WebFetchTool},
 };
@@ -156,8 +157,12 @@ fn wire_spawn_agent(
     let session_repo_for_agent = Arc::clone(&session_repo);
     let context_policy_for_agent = context_policy.clone();
 
+    // Shared store for background sub-agent results
+    let task_store = new_agent_task_store();
+
     // SpawnAgentTool::new returns the tool + a shared OnceLock cell
-    let (spawn_tool, cell) = SpawnAgentTool::new(provider, session_repo, context_policy);
+    let (spawn_tool, cell) =
+        SpawnAgentTool::new(provider, session_repo, context_policy, task_store.clone());
     let (agent_tool, agent_cell) = AgentTool::new(
         provider_for_agent,
         session_repo_for_agent,
@@ -172,6 +177,7 @@ fn wire_spawn_agent(
         panic!("wire_spawn_agent must be called before the registry Arc is cloned")
     });
     inner.register(Arc::new(spawn_tool));
+    inner.register(Arc::new(GetAgentResultTool::new(task_store)));
     inner.register(Arc::new(agent_tool));
     inner.register(Arc::new(TaskStopTool::new(orchestrator)));
     let registry = Arc::new(inner);

@@ -72,6 +72,26 @@ pub fn build(name: &str, config: &Config) -> Result<Arc<dyn LlmClient>, FactoryE
                 cfg.context_window,
             )))
         }
+        #[cfg(feature = "provider-gemini")]
+        "gemini" => {
+            use crate::gemini::GeminiAdapter;
+            let cfg = config
+                .providers
+                .gemini
+                .as_ref()
+                .cloned()
+                .unwrap_or_default();
+            let api_key = cfg
+                .resolved_api_key()
+                .ok_or(FactoryError::NotConfigured("gemini"))?;
+            Ok(Arc::new(GeminiAdapter::new(
+                api_key,
+                cfg.resolved_base_url(),
+                cfg.resolved_default_model(),
+                cfg.vision.unwrap_or(false),
+                cfg.context_window,
+            )))
+        }
         #[cfg(feature = "provider-llamacpp")]
         "llamacpp" => {
             use crate::llamacpp::LlamaCppAdapter;
@@ -133,7 +153,14 @@ pub fn build_default(config: &Config) -> Result<Arc<dyn LlmClient>, FactoryError
     }
 
     // Build all providers that are configured
-    let candidates = ["openrouter", "openai", "anthropic", "zhipu", "llamacpp"];
+    let candidates = [
+        "openrouter",
+        "openai",
+        "gemini",
+        "anthropic",
+        "zhipu",
+        "llamacpp",
+    ];
     let mut providers: Vec<Arc<dyn LlmClient>> = Vec::new();
 
     // Put default_provider first if specified

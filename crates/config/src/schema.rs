@@ -204,6 +204,7 @@ pub struct ProvidersConfig {
     pub openrouter: Option<OpenRouterConfig>,
     pub zhipu: Option<ZhipuConfig>,
     pub openai: Option<OpenAiConfig>,
+    pub gemini: Option<GeminiConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub llamacpp: Option<LlamaCppConfig>,
 }
@@ -314,6 +315,42 @@ impl OpenAiConfig {
             .clone()
             .or_else(|| std::env::var("OPENAI_DEFAULT_MODEL").ok())
             .unwrap_or_else(|| "gpt-4o".into())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GeminiConfig {
+    /// Bearer token. Falls back to `GEMINI_API_KEY` env var.
+    pub api_key: Option<String>,
+    /// Default model slug, e.g. `"gemini-2.5-flash"`.
+    pub default_model: Option<String>,
+    /// Override base URL. Defaults to `https://generativelanguage.googleapis.com/v1beta/openai`.
+    pub base_url: Option<String>,
+    /// Whether this provider endpoint supports vision inputs.
+    pub vision: Option<bool>,
+    /// Maximum supported model context window (tokens).
+    pub context_window: Option<usize>,
+}
+
+impl GeminiConfig {
+    pub fn resolved_api_key(&self) -> Option<String> {
+        self.api_key
+            .clone()
+            .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+    }
+
+    pub fn resolved_base_url(&self) -> String {
+        self.base_url
+            .clone()
+            .or_else(|| std::env::var("GEMINI_BASE_URL").ok())
+            .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta/openai".into())
+    }
+
+    pub fn resolved_default_model(&self) -> String {
+        self.default_model
+            .clone()
+            .or_else(|| std::env::var("GEMINI_DEFAULT_MODEL").ok())
+            .unwrap_or_else(|| "gemini-2.5-flash".into())
     }
 }
 

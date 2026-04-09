@@ -163,6 +163,10 @@ context_window = 128000
 [providers.llamacpp]
 vision = false
 context_window = 8192
+
+[providers.gemini]
+vision = true
+context_window = 1048576
 "#
         )
         .unwrap();
@@ -193,6 +197,10 @@ context_window = 8192
         let llamacpp = cfg.providers.llamacpp.unwrap();
         assert_eq!(llamacpp.vision, Some(false));
         assert_eq!(llamacpp.context_window, Some(8192));
+
+        let gemini = cfg.providers.gemini.unwrap();
+        assert_eq!(gemini.vision, Some(true));
+        assert_eq!(gemini.context_window, Some(1_048_576));
     }
 
     #[test]

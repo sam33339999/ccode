@@ -20,7 +20,7 @@ max_dimension = 2048
 strategy = "manual"
 
 # 當 strategy = "manual" 時，固定使用此服務商
-# 可選值: "openrouter" | "zhipu" | "anthropic" | "llamacpp"
+# 可選值: "openrouter" | "zhipu" | "anthropic" | "llamacpp" | "openai" | "gemini"
 default_provider = "openrouter"
 
 # ── Providers ──────────────────────────────────────────────────────────────────
@@ -62,6 +62,15 @@ api_key      = "sk-..."
 default_model = "gpt-4o-mini"
 # vision     = true                               # 是否支援圖片輸入（選填）
 # context_window = 128000                         # 模型上下文視窗上限（token，選填）
+
+# Gemini（Google AI Studio OpenAI-compatible endpoint）
+# env: GEMINI_API_KEY / GEMINI_BASE_URL / GEMINI_DEFAULT_MODEL
+[providers.gemini]
+api_key      = "AIza..."
+default_model = "gemini-2.5-flash"
+# base_url   = "https://generativelanguage.googleapis.com/v1beta/openai"
+# vision     = true
+# context_window = 1048576
 
 # llama.cpp 本地推理伺服器
 # 啟動方式: llama-server -m your-model.gguf --port 8080

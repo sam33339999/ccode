@@ -150,7 +150,7 @@ max_dimension = 2048
 strategy = "manual"
 
 # strategy = "manual" 時使用的服務商，或 failover 的主服務商
-# 可選值: "openrouter" | "zhipu" | "anthropic" | "llamacpp" | "openai"
+# 可選值: "openrouter" | "zhipu" | "anthropic" | "llamacpp" | "openai" | "gemini"
 default_provider = "openrouter"
 
 
@@ -191,6 +191,14 @@ default_model = "claude-opus-4-5"
 [providers.openai]
 api_key       = "sk-..."
 default_model = "gpt-4o"
+# vision       = true                            # provider 是否支援圖片輸入（選填）
+
+# Gemini（Google AI Studio OpenAI-compatible endpoint）
+# env: GEMINI_API_KEY / GEMINI_BASE_URL / GEMINI_DEFAULT_MODEL
+[providers.gemini]
+api_key       = "AIza..."
+default_model = "gemini-2.5-flash"
+# base_url     = "https://generativelanguage.googleapis.com/v1beta/openai"
 # vision       = true                            # provider 是否支援圖片輸入（選填）
 # context_window = 128000                        # 模型 context window（token，選填）
 

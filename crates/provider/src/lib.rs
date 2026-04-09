@@ -19,6 +19,9 @@ pub mod zhipu;
 #[cfg(feature = "provider-openai")]
 pub mod openai;
 
+#[cfg(feature = "provider-gemini")]
+pub mod gemini;
+
 #[cfg(feature = "provider-llamacpp")]
 pub mod llamacpp;
 

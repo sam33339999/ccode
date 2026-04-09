@@ -10,11 +10,14 @@
 
 use std::time::Duration;
 
-use ccode_config::schema::{AnthropicConfig, Config, LlamaCppConfig, OpenAiConfig, ZhipuConfig};
+use ccode_config::schema::{
+    AnthropicConfig, Config, GeminiConfig, LlamaCppConfig, OpenAiConfig, ZhipuConfig,
+};
 use ccode_domain::message::{Attachment, AttachmentData, Message, Role};
 use ccode_ports::provider::{LlmClient, LlmError, LlmRequest, StreamEvent, ToolDefinition};
 use ccode_provider::anthropic::AnthropicAdapter;
 use ccode_provider::factory;
+use ccode_provider::gemini::GeminiAdapter;
 use ccode_provider::llamacpp::LlamaCppAdapter;
 use ccode_provider::openai::OpenAiAdapter;
 use ccode_provider::openrouter::OpenRouterAdapter;
@@ -344,6 +347,38 @@ fn llamacpp_factory_passes_capabilities_from_config() {
     let caps = client.capabilities();
     assert!(caps.vision);
     assert_eq!(caps.context_window, Some(16_384));
+}
+
+#[test]
+fn gemini_adapter_capabilities_follow_config() {
+    let adapter = GeminiAdapter::new(
+        "test-key",
+        "http://example.com/v1beta/openai",
+        "gemini-2.5-pro",
+        true,
+        Some(1_048_576),
+    );
+
+    let caps = adapter.capabilities();
+    assert!(caps.vision);
+    assert_eq!(caps.context_window, Some(1_048_576));
+}
+
+#[test]
+fn gemini_factory_passes_capabilities_from_config() {
+    let mut config = Config::default();
+    config.providers.gemini = Some(GeminiConfig {
+        api_key: Some("test-key".to_string()),
+        default_model: Some("gemini-2.5-pro".to_string()),
+        base_url: Some("http://example.com/v1beta/openai".to_string()),
+        vision: Some(true),
+        context_window: Some(1_048_576),
+    });
+
+    let client = factory::build("gemini", &config).expect("gemini client should build");
+    let caps = client.capabilities();
+    assert!(caps.vision);
+    assert_eq!(caps.context_window, Some(1_048_576));
 }
 
 #[tokio::test]

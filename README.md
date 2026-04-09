@@ -110,7 +110,7 @@ All `api_key` / `base_url` / `default_model` fields are optional — the corresp
 strategy = "manual"
 
 # Provider used when strategy = "manual", or the primary for failover
-# Accepted values: "openrouter" | "zhipu" | "anthropic" | "llamacpp" | "openai"
+# Accepted values: "openrouter" | "zhipu" | "anthropic" | "llamacpp" | "openai" | "gemini"
 default_provider = "openrouter"
 
 
@@ -145,6 +145,13 @@ default_model = "claude-opus-4-5"
 [providers.openai]
 api_key       = "sk-..."
 default_model = "gpt-4o"
+
+# Gemini (Google AI Studio OpenAI-compatible endpoint)
+# env: GEMINI_API_KEY / GEMINI_BASE_URL / GEMINI_DEFAULT_MODEL
+[providers.gemini]
+api_key       = "AIza..."
+default_model = "gemini-2.5-flash"
+# base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 # llama.cpp local inference server
 # Start with: llama-server -m your-model.gguf --port 8080

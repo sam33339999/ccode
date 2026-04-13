@@ -73,3 +73,50 @@ After `cargo install`, macOS Gatekeeper may kill the binary silently. Fix:
 ```sh
 sudo spctl --add /usr/local/bin/ccode
 ```
+
+## Configuration
+
+### 設定檔優先順序（Layered Config）
+
+`ccode` 使用兩層設定檔，專案層優先於全域層：
+
+```
+.ccode/config.toml          ← 專案目錄（優先）
+~/.ccode/config.toml        ← 全域使用者設定（備用）
+```
+
+兩層會深度合併（deep-merge）：專案層只需寫需要覆蓋的欄位，其餘繼承全域設定。
+
+### Persona（系統提示詞）
+
+可在 `config.toml` 的頂層設定 `persona`，作為每個新 session 的預設 system prompt。
+
+**單行：**
+```toml
+persona = "You are a senior Rust engineer. Reply in Traditional Chinese."
+```
+
+**多行（TOML triple-quote，建議用於較長的提示詞）：**
+```toml
+persona = """
+You are a senior Rust engineer with deep expertise in async Rust and
+the Tokio ecosystem. When reviewing code:
+- Point out correctness issues first
+- Then suggest performance improvements
+- Always reply in Traditional Chinese
+"""
+```
+
+**CLI 旗標（優先於 config）：**
+```sh
+ccode agent  --persona "You are a Rust expert" --message "review this"
+ccode tui    --persona "You are a Rust expert"
+ccode repl   --persona "You are a Rust expert"   # pipe 模式有效；TTY 模式轉交 TUI
+```
+
+**優先順序：**
+```
+--persona CLI 旗標  >  .ccode/config.toml [persona]  >  ~/.ccode/config.toml [persona]
+```
+
+Persona 僅在新 session 的**第一輪**注入，不會重複插入。

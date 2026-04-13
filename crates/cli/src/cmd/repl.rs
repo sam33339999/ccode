@@ -40,7 +40,7 @@ fn detect_repl_mode() -> ReplMode {
 
 pub async fn run(args: ReplArgs) -> anyhow::Result<()> {
     match detect_repl_mode() {
-        ReplMode::Tui => super::tui::run_ui(None, false).await,
+        ReplMode::Tui => super::tui::run_ui(None, args.persona, args.no_confirm).await,
         ReplMode::Pipe => run_pipe_mode(args).await,
     }
 }
@@ -61,8 +61,14 @@ async fn run_pipe_mode(args: ReplArgs) -> anyhow::Result<()> {
     let cmd = AgentRunCommand::new(state.session_repo, provider).with_context(state.context_policy);
 
     let mut session_id = args.session;
+    // CLI --persona 優先；fallback 到 config 的 persona。
+    // 展開動態佔位符後附加 skill catalog。
+    let raw_persona = args.persona.or_else(|| state.persona.clone());
+    let expanded_persona = raw_persona.map(|p| {
+        ccode_bootstrap::persona_template::expand(&p, &state.cwd)
+    });
     let mut persona_once =
-        ccode_bootstrap::skill::augment_with_skill_catalog(args.persona, &state.skill_catalog);
+        ccode_bootstrap::skill::augment_with_skill_catalog(expanded_persona, &state.skill_catalog);
 
     for line in io::stdin().lock().lines() {
         let input = line?.trim().to_string();

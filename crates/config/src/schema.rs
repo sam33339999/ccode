@@ -19,6 +19,9 @@ pub struct Config {
     #[serde(default)]
     pub tui: TuiConfig,
     pub gateway: Option<GatewayConfig>,
+    /// Default system prompt / persona injected at the start of every new session.
+    /// Can be overridden per-invocation with `--persona`.
+    pub persona: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,8 +1,39 @@
-# Clawler 設定範例
-# 複製到 ~/.clawler/config.toml 後修改
+# ccode 設定範例
+# 複製到 ~/.ccode/config.toml 後修改；
+# 或放在專案目錄的 .ccode/config.toml，只寫需要覆蓋的欄位即可（兩層會自動 deep-merge）。
 #
 # 所有 api_key / base_url / default_model 欄位均可省略，
 # 改用環境變數替代（各欄位旁有標注對應的 env var）。
+
+# ── Persona（系統提示詞）────────────────────────────────────────────────────────
+# 每個新 session 開始時自動注入的 system prompt。
+# 可被 CLI 旗標 --persona 覆蓋。
+#
+# 單行寫法：
+# persona = "You are a senior Rust engineer. Reply in Traditional Chinese."
+#
+# 多行寫法（triple-quote，適合較長的提示詞）：
+# persona = """
+# You are a senior Rust engineer with deep expertise in async Rust and
+# the Tokio ecosystem. When reviewing code:
+# - Point out correctness issues first
+# - Then suggest performance improvements
+# - Always reply in Traditional Chinese
+# """
+#
+# 動態佔位符（執行時展開）：
+#
+#   {{today()}}        → 今日日期，格式 YYYY-MM-DD（e.g. 2026-04-13）
+#   {{now()}}          → 現在日期時間，格式 YYYY-MM-DD HH:MM:SS
+#   {{cwd()}}          → 目前工作目錄絕對路徑
+#   {{env("VAR_NAME")}}→ 環境變數值（找不到則為空字串）
+#
+# 使用範例：
+# persona = """
+# You are a senior Rust engineer.
+# Today is {{today()}}. Current project: {{cwd()}}.
+# Always reply in Traditional Chinese.
+# """
 
 # ── Image ──────────────────────────────────────────────────────────────────────
 
@@ -117,8 +148,8 @@ allow_privileged_computer_use = false
 #        | "vector"（語意搜尋，需設定 embedding provider）
 backend = "fts5"
 
-# SQLite 資料庫儲存路徑（預設 ~/.clawler/memory.db）
-# db_path = "~/.clawler/memory.db"
+# SQLite 資料庫儲存路徑（預設 ~/.ccode/memory.db）
+# db_path = "~/.ccode/memory.db"
 
 # ── Remote Runtime (CCR HTTP) ─────────────────────────────────────────────────
 

@@ -34,8 +34,14 @@ pub async fn run(args: AgentArgs) -> anyhow::Result<()> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("no LLM provider configured — set OPENROUTER_API_KEY"))?;
 
+    // --persona CLI 旗標優先；fallback 到 config 的 persona。
+    // 再展開動態佔位符（{{today()}} 等），最後附加 skill catalog。
+    let raw_persona = args.persona.or_else(|| state.persona.clone());
+    let expanded_persona = raw_persona.map(|p| {
+        ccode_bootstrap::persona_template::expand(&p, &state.cwd)
+    });
     let system_prompt = ccode_bootstrap::skill::augment_with_skill_catalog(
-        args.persona.clone(),
+        expanded_persona,
         &state.skill_catalog,
     );
 

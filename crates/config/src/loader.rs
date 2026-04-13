@@ -16,6 +16,50 @@ pub fn load_from(path: &Path) -> Result<Config, ConfigError> {
     toml::from_str(&content).map_err(|e| ConfigError::Parse(e.to_string()))
 }
 
+/// Load config with layered resolution:
+/// 1. `~/.ccode/config.toml` — global baseline
+/// 2. `{cwd}/.ccode/config.toml` — project-local override (merged on top)
+///
+/// Project-level values win over global ones; missing file at either level is
+/// silently treated as an empty table.
+pub fn load_layered(cwd: &Path) -> Result<Config, ConfigError> {
+    let global_path = crate::paths::ccode_dir().join("config.toml");
+    let project_path = cwd.join(".ccode").join("config.toml");
+
+    let global = read_toml_value(&global_path)?;
+    let project = read_toml_value(&project_path)?;
+
+    let merged = merge_toml(global, project);
+    toml::Value::try_into(merged).map_err(|e| ConfigError::Parse(e.to_string()))
+}
+
+/// Read a TOML file into a `toml::Value::Table`.
+/// Returns an empty table if the file does not exist.
+fn read_toml_value(path: &Path) -> Result<toml::Value, ConfigError> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+    let content = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
+    toml::from_str(&content).map_err(|e| ConfigError::Parse(e.to_string()))
+}
+
+/// Recursively merge two TOML values.  For tables, `override_` keys win.
+/// For all other types the override value replaces the base entirely.
+fn merge_toml(base: toml::Value, override_: toml::Value) -> toml::Value {
+    match (base, override_) {
+        (toml::Value::Table(mut base_map), toml::Value::Table(override_map)) => {
+            for (k, v) in override_map {
+                let existing = base_map
+                    .remove(&k)
+                    .unwrap_or(toml::Value::Table(toml::map::Map::new()));
+                base_map.insert(k, merge_toml(existing, v));
+            }
+            toml::Value::Table(base_map)
+        }
+        (_, override_val) => override_val,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

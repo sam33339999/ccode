@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod image_input;
+pub mod persona_template;
 
 pub use image_input::{
     ImageAttachmentWarning, ImageInputError, ParsedImageInput, load_images_from_placeholders,
@@ -66,6 +67,9 @@ pub struct AppState {
     pub skill_catalog: Option<String>,
     /// Discovered skills, used for user-explicit `/skill-name` activation.
     pub skills: Vec<SkillEntry>,
+    /// Default persona / system prompt from config (`persona` key).
+    /// `None` when not set in any config file.
+    pub persona: Option<String>,
 }
 
 impl AppState {
@@ -137,6 +141,7 @@ pub fn wire_dev() -> AppState {
         context_policy: ContextPolicy::default(),
         skill_catalog: None,
         skills: Vec::new(),
+        persona: None,
     }
 }
 
@@ -217,7 +222,14 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
     use ccode_provider::factory;
     use ccode_session::jsonl::FileSessionRepo;
 
-    let config = ccode_config::load().map_err(WireError::Config)?;
+    // Use layered config when a cwd is known, so that `.ccode/config.toml` in the
+    // project directory overrides `~/.ccode/config.toml`.
+    let config = if let Some(ref cwd) = cwd_override {
+        ccode_config::load_layered(cwd)
+    } else {
+        ccode_config::load()
+    }
+    .map_err(WireError::Config)?;
     let base = ccode_config::paths::ccode_dir();
 
     let session_repo = FileSessionRepo::new(base.join("sessions"))
@@ -333,6 +345,7 @@ pub fn wire_from_config_with_cwd(cwd_override: Option<PathBuf>) -> Result<AppSta
         context_policy,
         skill_catalog,
         skills,
+        persona: config.persona,
     })
 }
 

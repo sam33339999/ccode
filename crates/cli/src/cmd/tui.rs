@@ -191,23 +191,35 @@ pub struct TuiArgs {
     /// Resume an existing session by ID
     #[arg(short, long)]
     pub session: Option<String>,
+    /// System prompt / persona for the agent (e.g. "You are a senior Rust engineer").
+    /// Falls back to `persona` in config.toml when not supplied.
+    #[arg(long)]
+    pub persona: Option<String>,
     /// Skip tool confirmation prompts
     #[arg(long)]
     pub no_confirm: bool,
 }
 
 pub async fn run(args: TuiArgs) -> anyhow::Result<()> {
-    run_ui(args.session, args.no_confirm).await
+    run_ui(args.session, args.persona, args.no_confirm).await
 }
 
-pub async fn run_ui(session: Option<String>, no_confirm: bool) -> anyhow::Result<()> {
+pub async fn run_ui(
+    session: Option<String>,
+    persona: Option<String>,
+    no_confirm: bool,
+) -> anyhow::Result<()> {
     if !terminal_supports_tui() {
         anyhow::bail!("[tui] terminal does not support raw mode");
     }
-    run_ui_loop(session, no_confirm).await
+    run_ui_loop(session, persona, no_confirm).await
 }
 
-async fn run_ui_loop(session: Option<String>, no_confirm: bool) -> anyhow::Result<()> {
+async fn run_ui_loop(
+    session: Option<String>,
+    persona: Option<String>,
+    no_confirm: bool,
+) -> anyhow::Result<()> {
     // Resolve the user's preferred theme via bootstrap (best-effort; falls back to "").
     let tui_theme_name = ccode_bootstrap::tui_theme().unwrap_or_default();
     let color_support = detect_color_support();
@@ -247,6 +259,27 @@ async fn run_ui_loop(session: Option<String>, no_confirm: bool) -> anyhow::Resul
             app.push_error_status(e.to_string());
             RuntimeDeps::Unavailable
         }
+    };
+
+    // Resolve the effective persona: CLI flag takes priority over config.
+    // Augmented with the skill catalog (if any) and consumed once on the first
+    // turn of a new session; subsequent turns don't re-inject it.
+    let mut persona_once = {
+        let (config_persona, skill_catalog, cwd) =
+            if let RuntimeDeps::Ready { ref bootstrap_state } = runtime_deps {
+                (
+                    bootstrap_state.persona.clone(),
+                    &bootstrap_state.skill_catalog,
+                    bootstrap_state.cwd.clone(),
+                )
+            } else {
+                (None, &None, std::env::current_dir().unwrap_or_default())
+            };
+        // CLI --persona 優先；fallback 到 config 的 persona。
+        // 展開動態佔位符後附加 skill catalog。
+        let raw = persona.or(config_persona);
+        let expanded = raw.map(|p| ccode_bootstrap::persona_template::expand(&p, &cwd));
+        ccode_bootstrap::skill::augment_with_skill_catalog(expanded, skill_catalog)
     };
 
     // Load historical messages if restoring an existing session.
@@ -313,6 +346,7 @@ async fn run_ui_loop(session: Option<String>, no_confirm: bool) -> anyhow::Resul
                 runtime.abort_handle = Some(spawn_agent_turn(
                     Arc::clone(bootstrap_state),
                     runtime.session_id.clone(),
+                    None,
                     follow_up,
                     Vec::new(),
                     ui_tx.clone(),
@@ -360,6 +394,7 @@ async fn run_ui_loop(session: Option<String>, no_confirm: bool) -> anyhow::Resul
                         runtime.abort_handle = Some(spawn_agent_turn(
                             Arc::clone(bootstrap_state),
                             runtime.session_id.clone(),
+                            persona_once.take(),
                             parsed.prompt,
                             parsed.images,
                             ui_tx.clone(),
@@ -418,6 +453,7 @@ async fn run_ui_loop(session: Option<String>, no_confirm: bool) -> anyhow::Resul
                         runtime.abort_handle = Some(spawn_agent_turn(
                             Arc::clone(bootstrap_state),
                             runtime.session_id.clone(),
+                            None,
                             prompt,
                             Vec::new(),
                             ui_tx.clone(),
@@ -1775,6 +1811,7 @@ fn drain_ui_events(
 fn spawn_agent_turn(
     bootstrap_state: Arc<BootstrapState>,
     session_id: Option<String>,
+    system_prompt: Option<String>,
     user_content: String,
     images: Vec<ImageSource>,
     ui_tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
@@ -1896,7 +1933,7 @@ fn spawn_agent_turn(
         let result = cmd
             .run_with_metrics(
                 session_id,
-                None,
+                system_prompt,
                 user_content,
                 images,
                 tool_definitions,

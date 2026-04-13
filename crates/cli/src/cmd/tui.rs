@@ -442,8 +442,14 @@ async fn run_ui_loop(session: Option<String>, no_confirm: bool) -> anyhow::Resul
     }
 
     terminal.show_cursor()?;
+    let final_session_id = runtime.session_id.clone();
     drop(terminal);
     drop(terminal_guard);
+
+    if let Some(sid) = final_session_id {
+        println!("復原對話  ccode tui --session {sid}");
+    }
+
     Ok(())
 }
 

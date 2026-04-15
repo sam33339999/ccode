@@ -103,12 +103,34 @@ impl ErrorEnvelope {
 }
 
 pub fn render_error(error: &AnyError, ctx: &ErrorContext) -> String {
+    log_error_to_file(&error.to_string());
     let resolved_ctx = resolve_context(error, ctx);
     classify_anyhow_error(error, &resolved_ctx).render()
 }
 
 pub fn render_error_message(message: &str, ctx: &ErrorContext) -> String {
+    log_error_to_file(message);
     classify_message_into_envelope(message, ctx).render()
+}
+
+/// Append a line to `~/.ccode/logs/errors.log`.
+fn log_error_to_file(message: &str) {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let log_dir = std::path::PathBuf::from(&home)
+        .join(".ccode")
+        .join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("errors.log"))
+    else {
+        return;
+    };
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let _ = writeln!(f, "[{now}] [error] {message}");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
